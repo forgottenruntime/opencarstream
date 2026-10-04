@@ -1804,6 +1804,7 @@ STATUS_HTML = """<!DOCTYPE html>
   .dock-btn.active{color:#fff;background:var(--red);}
   .app-tile svg,.dock-btn svg{stroke:currentColor;fill:none;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;}
   .card{border-radius:20px;}
+  [id$="-mode-btns"]:empty{display:none;}
   @media(max-width:560px){.statusbar .sub2{display:none;} body{padding:66px 14px 120px;} .app-grid{grid-template-columns:repeat(auto-fill,minmax(150px,1fr));}}
 </style>
 </head>
@@ -2313,12 +2314,8 @@ STATUS_HTML = """<!DOCTYPE html>
     return state;
   }
 
-  // ── Mode button options (shared across tabs) ──
-  var modeOptions = [
-    { value: "mjpeg",  label: "MJPEG (t)" },
-    { value: "mp4",    label: "MP4 (native)" },
-    { value: "audio",  label: "Audio only" }
-  ];
+  // ── Mode buttons hidden (always MJPEG); empty list = no buttons rendered ──
+  var modeOptions = [];
 
   // ── Stream tab ──
   var idInput    = document.getElementById("yt-id");
