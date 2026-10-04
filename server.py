@@ -1688,10 +1688,13 @@ STATUS_HTML = """<!DOCTYPE html>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>OpenCarStream — Streaming </title>
+<script>try{var _t=localStorage.getItem("ocs_theme");if(_t)document.documentElement.setAttribute("data-theme",_t);}catch(e){}</script>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@700;900&family=Rajdhani:wght@300;500&display=swap');
   :root{--red:#e31937;--dark:#090909;--panel:#111117;--border:#252530;--text:#e0e0ee;--muted:#555568;--input-bg:#0d0d14;--thumb-bg:#1a1a24;}
-  @media(prefers-color-scheme:light){:root{--dark:#f4f4f6;--panel:#ffffff;--border:#d8d8e0;--text:#1a1a2e;--muted:#888899;--input-bg:#eaeaf0;--thumb-bg:#dcdce8;}}
+  @media(prefers-color-scheme:light){:root:not([data-theme="dark"]){--dark:#f4f4f6;--panel:#ffffff;--border:#d8d8e0;--text:#1a1a2e;--muted:#888899;--input-bg:#eaeaf0;--thumb-bg:#dcdce8;}}
+  :root[data-theme="light"]{--dark:#f4f4f6;--panel:#ffffff;--border:#d8d8e0;--text:#1a1a2e;--muted:#888899;--input-bg:#eaeaf0;--thumb-bg:#dcdce8;}
+  :root[data-theme="dark"]{--red:#e31937;--dark:#090909;--panel:#111117;--border:#252530;--text:#e0e0ee;--muted:#555568;--input-bg:#0d0d14;--thumb-bg:#1a1a24;}
   *{margin:0;padding:0;box-sizing:border-box;}
   body{background:var(--dark);color:var(--text);font-family:'Rajdhani',sans-serif;font-size:21px;min-height:100vh;display:flex;flex-direction:column;align-items:center;padding:24px 32px;}
   h1{font-family:'Orbitron',monospace;font-weight:900;font-size:2.4rem;color:var(--red);letter-spacing:.12em;text-shadow:0 0 24px rgba(227,25,55,.45);margin-bottom:6px;}
@@ -1751,6 +1754,7 @@ STATUS_HTML = """<!DOCTYPE html>
   <button class="tab-btn" data-tab="local">Local Media</button>
   <button class="tab-btn" data-tab="movies">Movies</button>
   <button class="tab-btn" data-tab="info">Info</button>
+  <button id="theme-toggle" class="tab-btn" style="margin-left:auto;" title="Toggle light / dark">Theme</button>
 </div>
 
 <!-- ── Stream tab ── -->
@@ -1838,6 +1842,7 @@ STATUS_HTML = """<!DOCTYPE html>
       <input id="yt-search-input" type="text" placeholder="Search query…">
       <button id="yt-search-go">SEARCH</button>
     </div>
+    <div id="yt-search-recent" style="display:flex;flex-wrap:wrap;gap:6px;margin-top:8px;"></div>
     <div class="feed-status" id="yt-search-status"></div>
     <div class="feed-grid" id="yt-search-grid"></div>
     <div style="text-align:center;margin-top:14px;display:none;" id="yt-search-more-wrap">
@@ -2996,6 +3001,7 @@ STATUS_HTML = """<!DOCTYPE html>
     var q = (ytSearchInput.value || "").trim();
     if (!q) { ytSearchInput.focus(); return; }
     if (!append) {
+      saveYtSearch(q);
       ytSearchLimit = 12;
       ytSearchGrid.innerHTML = "";
       ytSearchMoreWrap.style.display = "none";
@@ -3044,6 +3050,64 @@ STATUS_HTML = """<!DOCTYPE html>
     ytSearchLimit += 12;
     runYtSearch(true);
   });
+
+  // ── Recent YouTube searches (persisted per browser) ──
+  var ytRecentWrap = document.getElementById("yt-search-recent");
+  function getYtHistory() {
+    try { return JSON.parse(localStorage.getItem("ocs_yt_history") || "[]"); }
+    catch (e) { return []; }
+  }
+  function saveYtSearch(q) {
+    try {
+      var h = getYtHistory().filter(function (x) { return x.toLowerCase() !== q.toLowerCase(); });
+      h.unshift(q);
+      localStorage.setItem("ocs_yt_history", JSON.stringify(h.slice(0, 8)));
+    } catch (e) {}
+    renderYtRecent();
+  }
+  function renderYtRecent() {
+    var h = getYtHistory();
+    ytRecentWrap.innerHTML = "";
+    if (!h.length) return;
+    var lbl = document.createElement("span");
+    lbl.textContent = "Recent:";
+    lbl.style.cssText = "font-size:.75rem;color:var(--muted);align-self:center;";
+    ytRecentWrap.appendChild(lbl);
+    h.forEach(function (q) {
+      var chip = document.createElement("button");
+      chip.textContent = q;
+      chip.style.cssText = "background:var(--input-bg);color:var(--text);border:1px solid var(--border);border-radius:14px;padding:4px 12px;font-size:.78rem;cursor:pointer;";
+      chip.addEventListener("click", function () { ytSearchInput.value = q; runYtSearch(false); });
+      ytRecentWrap.appendChild(chip);
+    });
+    var clear = document.createElement("button");
+    clear.textContent = "clear";
+    clear.style.cssText = "background:transparent;color:var(--muted);border:0;font-size:.72rem;cursor:pointer;text-decoration:underline;align-self:center;";
+    clear.addEventListener("click", function () {
+      try { localStorage.removeItem("ocs_yt_history"); } catch (e) {}
+      renderYtRecent();
+    });
+    ytRecentWrap.appendChild(clear);
+  }
+  renderYtRecent();
+
+  // ── Light / dark theme toggle (persisted per browser) ──
+  var themeToggle = document.getElementById("theme-toggle");
+  function currentTheme() {
+    var set = document.documentElement.getAttribute("data-theme");
+    if (set) return set;
+    return (window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches) ? "light" : "dark";
+  }
+  function applyThemeLabel() {
+    themeToggle.textContent = currentTheme() === "dark" ? "☀ Light" : "☾ Dark";
+  }
+  themeToggle.addEventListener("click", function () {
+    var next = currentTheme() === "dark" ? "light" : "dark";
+    document.documentElement.setAttribute("data-theme", next);
+    try { localStorage.setItem("ocs_theme", next); } catch (e) {}
+    applyThemeLabel();
+  });
+  applyThemeLabel();
   var feedLimit    = 12;
 
   function appendFeedCards(videos) {
