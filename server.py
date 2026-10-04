@@ -16,6 +16,7 @@ import os
 import signal
 import json
 import logging
+import socket
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -57,6 +58,10 @@ FFMPEG_QUALITY= int(os.environ.get("FFMPEG_QUALITY", "3"))   # 1=best, 31=worst
 STREAM_WIDTH  = int(os.environ.get("STREAM_WIDTH", "1920"))
 STREAM_HEIGHT = int(os.environ.get("STREAM_HEIGHT", "1080"))
 MAX_STREAMS   = int(os.environ.get("MAX_STREAMS", "3"))       # concurrent stream slots
+# HW-accelerated DECODE (encode stays MJPEG on CPU). "vaapi" | "qsv" | "off".
+# Decode is the heavy part for 1080p HEVC/H264; offloading it to the iGPU frees CPU.
+HW_DECODE       = os.environ.get("HW_DECODE", "off").lower()
+HWACCEL_DEVICE  = os.environ.get("HWACCEL_DEVICE", "/dev/dri/renderD128")
 AUDIO_DELAY_MS= int(os.environ.get("AUDIO_DELAY_MS", "0"))   # ms to delay video start after audio, to keep streams in sync
 LOCAL_MEDIA_VIDEO_DELAY_MS = int(
     os.environ.get("LOCAL_MEDIA_VIDEO_DELAY_MS", "1500")
@@ -1012,6 +1017,24 @@ def _probe_local_codecs(abs_path: str) -> tuple[str, str]:
         return "", ""
 
 
+def _hwaccel_args() -> list[str]:
+    """HW-accelerated DECODE flags, inserted before -i.
+
+    Uses generic ``-hwaccel`` (no ``-hwaccel_output_format``), so ffmpeg decodes
+    on the GPU then auto-downloads frames to system memory — the existing software
+    scale + mjpeg encode path is untouched, and unsupported codecs fall back to
+    software decode automatically. Encode stays MJPEG on CPU (NVENC/most iGPUs
+    don't do MJPEG; the iGPU's JPEG encoder is a later, more fragile step).
+    """
+    if HW_DECODE == "vaapi":
+        return ["-hwaccel", "vaapi", "-hwaccel_device", HWACCEL_DEVICE]
+    if HW_DECODE == "qsv":
+        return ["-hwaccel", "qsv"]
+    if HW_DECODE in ("cuda", "nvdec"):
+        return ["-hwaccel", "cuda"]   # NVIDIA NVDEC (needs nvidia runtime + video capability)
+    return []
+
+
 def _direct_input_args(url: str) -> list[str]:
     """ffmpeg input flags for a direct stream URL."""
     from urllib.parse import urlparse, parse_qs
@@ -1245,6 +1268,7 @@ def _start_muxed_pipeline(stream: Stream):
     ff_cmd = [
         "ffmpeg",
         "-loglevel", "error",
+        *_hwaccel_args(),
         *_direct_input_args(stream.url),
         *seek_args,
         "-probesize", "20M",
@@ -1347,6 +1371,7 @@ def _run_hls_pipeline(stream: Stream):
             ff_cmd = [
                 "ffmpeg",
                 "-loglevel", "error",
+                *_hwaccel_args(),
                 *_direct_input_args(stream.url),
                 "-i", _ffmpeg_input_target(stream.url),
                 "-vf", (
@@ -1373,7 +1398,10 @@ def _run_hls_pipeline(stream: Stream):
 
         buf = b""
         while True:
-            chunk = ff_proc.stdout.read(65536)
+            # read1(): return as soon as data is available instead of blocking
+            # until a full 64 KB accumulates — otherwise frames arrive in ~4-frame
+            # bursts and the serve loop drops all but the latest => ~4 fps + stutter.
+            chunk = ff_proc.stdout.read1(65536)
             if not chunk:
                 break
             buf += chunk
@@ -1499,6 +1527,7 @@ def run_pipeline(stream: Stream):
                 ff_cmd = [
                     "ffmpeg",
                     "-loglevel", "error",
+                    *_hwaccel_args(),
                     "-reconnect", "1",
                     "-reconnect_streamed", "1",
                     "-reconnect_delay_max", "10",
@@ -1538,6 +1567,7 @@ def run_pipeline(stream: Stream):
                 ff_cmd = [
                     "ffmpeg",
                     "-loglevel", "error",
+                    *_hwaccel_args(),
                     "-re",
                     "-i", "pipe:0",
                     "-vf", (
@@ -1585,7 +1615,7 @@ def run_pipeline(stream: Stream):
             frame_before = stream.frame
             buf = b""
             while True:
-                chunk = ff_proc.stdout.read(65536)
+                chunk = ff_proc.stdout.read1(65536)  # see read1() note in _run_hls_pipeline
                 if not chunk:
                     break
                 buf += chunk
@@ -1657,7 +1687,7 @@ STATUS_HTML = """<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>OpenCarStream — Streaming for Tesla vehicles</title>
+<title>OpenCarStream — Streaming </title>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@700;900&family=Rajdhani:wght@300;500&display=swap');
   :root{--red:#e31937;--dark:#090909;--panel:#111117;--border:#252530;--text:#e0e0ee;--muted:#555568;--input-bg:#0d0d14;--thumb-bg:#1a1a24;}
@@ -1709,7 +1739,7 @@ STATUS_HTML = """<!DOCTYPE html>
 </head>
 <body>
 <h1>OPENCARSTREAM</h1>
-<p class="sub">A third-party streaming launcher for Tesla’s in-car browser</p>
+<p class="sub">A third-party streaming launcher  browser</p>
 
 <div class="tabs">
   <button class="tab-btn active" data-tab="stream">Stream</button>
@@ -2002,7 +2032,7 @@ STATUS_HTML = """<!DOCTYPE html>
   </div>
 </div>
 
-<footer>Tesla is a trademark of Tesla, Inc. OpenCarStream is unofficial and not affiliated with or endorsed by Tesla. YouTube is a trademark of Google LLC, Twitch is a trademark of Twitch Interactive, Inc., and X/Twitter is a trademark of X Corp.; OpenCarStream is not affiliated with or endorsed by any of them.</footer>
+<footer> YouTube is a trademark of Google LLC, Twitch is a trademark of Twitch Interactive, Inc., and X/Twitter is a trademark of X Corp.; OpenCarStream is not affiliated with or endorsed by any of them.</footer>
 <p id="weather-text" style="margin-top:10px;color:var(--muted);font-size:.85rem;text-align:center;"></p>
 
 <script>
@@ -2085,7 +2115,7 @@ STATUS_HTML = """<!DOCTYPE html>
 
   // ── Mode button options (shared across tabs) ──
   var modeOptions = [
-    { value: "mjpeg",  label: "MJPEG (Tesla)" },
+    { value: "mjpeg",  label: "MJPEG (t)" },
     { value: "mp4",    label: "MP4 (native)" },
     { value: "audio",  label: "Audio only" }
   ];
@@ -5023,36 +5053,68 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("X-Stream-Title", self._safe_header_value(stream.title or ""))
         self.end_headers()
 
+        # Disable Nagle: MJPEG writes each frame then waits for the next. With Nagle
+        # + delayed-ACK the per-frame flush stalls ~40-200ms regardless of CPU/bandwidth,
+        # throttling the stream to a few fps and causing the stutter.
+        try:
+            self.connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        except OSError:
+            pass
+
         log.info(f"[{stream.id}] Client connected: {self.client_address[0]}")
         last_frame = None
 
+        def _write(frame):
+            self.wfile.write(
+                b"--frame\r\n"
+                b"Content-Type: image/jpeg\r\n"
+                b"Content-Length: " + str(len(frame)).encode() + b"\r\n\r\n"
+                + frame + b"\r\n"
+            )
+
         try:
-            while True:
-                # Wait for FFmpeg to produce a new frame (wakes all clients immediately).
-                with stream.frame_cond:
-                    stream.frame_cond.wait(timeout=5.0)
-                    if delay_s <= 0:
-                        frame = stream.frame
-                    else:
+            if delay_s > 0:
+                # Jitter buffer. ffmpeg emits frames in GOP bursts (clusters ~1ms
+                # apart, then ~300ms gaps). Forwarding that as-is looks like stutter
+                # even at a correct average fps. Instead, emit at an EVEN cadence from
+                # the delay_s buffer: one frame per 1/fps tick, in order. delay_s of
+                # buffered frames absorbs the bursts, so playback is smooth.
+                interval = 1.0 / max(getattr(stream, "fps", 0) or MJPEG_FPS, 1)
+                last_sent_ts = 0.0
+                next_t = time.time()
+                while True:
+                    next_t += interval
+                    dt = next_t - time.time()
+                    if dt > 0:
+                        time.sleep(dt)
+                    elif dt < -1.0:
+                        next_t = time.time()  # fell far behind, resync clock
+                    with stream.frame_cond:
                         cutoff = time.time() - delay_s
                         frame = None
-                        for ts, candidate in reversed(stream._frame_history):
-                            if ts <= cutoff:
+                        for ts, candidate in stream._frame_history:
+                            if ts > last_sent_ts and ts <= cutoff:
                                 frame = candidate
+                                last_sent_ts = ts
                                 break
-                    status = stream.status
-
-                if frame and frame is not last_frame:
-                    last_frame = frame
-                    boundary = (
-                        b"--frame\r\n"
-                        b"Content-Type: image/jpeg\r\n"
-                        b"Content-Length: " + str(len(frame)).encode() + b"\r\n\r\n"
-                    )
-                    self.wfile.write(boundary + frame + b"\r\n")
-
-                if status in ("error", "done"):
-                    break
+                        status = stream.status
+                    if frame is not None and frame is not last_frame:
+                        last_frame = frame
+                        _write(frame)
+                    elif status in ("error", "done"):
+                        break  # pipeline ended and buffer drained
+            else:
+                # No sync: lowest latency, forward each frame as produced.
+                while True:
+                    with stream.frame_cond:
+                        stream.frame_cond.wait(timeout=5.0)
+                        frame = stream.frame
+                        status = stream.status
+                    if frame and frame is not last_frame:
+                        last_frame = frame
+                        _write(frame)
+                    if status in ("error", "done"):
+                        break
 
         except (BrokenPipeError, ConnectionResetError):
             log.info(f"[{stream.id}] Client disconnected: {self.client_address[0]}")

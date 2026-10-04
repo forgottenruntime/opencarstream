@@ -2,12 +2,21 @@
 ARG PYTHON_IMAGE=python:3.12-slim
 FROM ${PYTHON_IMAGE} AS base
 
-# System deps: ffmpeg + curl (for yt-dlp download)
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# System deps: ffmpeg + curl (yt-dlp) + Intel VAAPI driver (iHD) for optional HW
+# decode (used only when HW_DECODE=vaapi; harmless otherwise). non-free holds the driver.
+RUN set -eux; \
+    if [ -f /etc/apt/sources.list.d/debian.sources ]; then \
+        sed -i 's/^Components: .*/Components: main contrib non-free non-free-firmware/' /etc/apt/sources.list.d/debian.sources; \
+    fi; \
+    apt-get update && apt-get install -y --no-install-recommends \
         ffmpeg \
         curl \
         ca-certificates \
         nodejs \
+        intel-media-va-driver-non-free \
+        libva2 \
+        libva-drm2 \
+        vainfo \
     && rm -rf /var/lib/apt/lists/*
 
 # Install yt-dlp as a standalone binary (always latest)
