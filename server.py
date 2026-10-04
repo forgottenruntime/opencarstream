@@ -2107,7 +2107,16 @@ STATUS_HTML = """<!DOCTYPE html>
 
 <nav class="dock" id="dock"></nav>
 
-<footer> YouTube is a trademark of Google LLC, Twitch is a trademark of Twitch Interactive, Inc., and X/Twitter is a trademark of X Corp.; Stella Stream is not affiliated with or endorsed by any of them.</footer>
+<footer>
+  <div style="display:flex;justify-content:center;gap:18px;margin-bottom:13px;color:var(--red);filter:drop-shadow(0 0 7px rgba(227,25,55,.45));">
+    <svg viewBox="0 0 24 24" style="width:26px;height:26px;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round;" aria-label="rocket"><path d="M12 2c3 2.4 4.6 6 4.6 9.5L14 14h-4l-2.6-2.5C7.4 8 9 4.4 12 2z"/><circle cx="12" cy="9" r="1.5"/><path d="M8 15l-2.5 2.5M8 15c-2 .7-3 2.5-3 5 2.5 0 4.3-1 5-3M16 15l2.5 2.5M16 15c2 .7 3 2.5 3 5-2.5 0-4.3-1-5-3"/></svg>
+    <svg viewBox="0 0 24 24" style="width:26px;height:26px;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round;" aria-label="world"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3 3 15 0 18M12 3c-3 3-3 15 0 18"/></svg>
+    <svg viewBox="0 0 24 24" style="width:26px;height:26px;fill:currentColor;stroke:none;" aria-label="spark"><path d="M12 2.5l1.9 6L20 10l-6.1 1.5L12 17.5l-1.9-6L4 10l6.1-1.5z"/></svg>
+  </div>
+  <div style="font-size:1rem;color:var(--text);font-weight:600;letter-spacing:.02em;">Made by the best intelligences.</div>
+  <div style="font-size:.88rem;color:var(--muted);margin-top:5px;">Soon we leave this planet — when is up to mankind and Elon Musk.</div>
+  <div style="font-size:.8rem;color:var(--muted);margin-top:7px;font-style:italic;opacity:.8;">The world is changing. Few have noticed — yet.</div>
+</footer>
 <p id="weather-text" style="margin-top:10px;color:var(--muted);font-size:.85rem;text-align:center;"></p>
 
 <script>
