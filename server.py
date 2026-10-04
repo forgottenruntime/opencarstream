@@ -442,6 +442,7 @@ class PlutoCache:
                 "id":       ch.get("_id", ""),
                 "name":     ch.get("name", ""),
                 "category": ch.get("category", ""),
+                "logo":     _pluto_logo(ch),
                 "hls_url":  hls_url,
                 "url":      stitched_url,
             })
@@ -573,6 +574,33 @@ def _is_local_media_url(url: str) -> bool:
 def _is_acestream(url: str) -> bool:
     """True for acestream-http-proxy URLs (MPEG-TS over HTTP)."""
     return "/ace/getstream" in url or "/ace/manifest.m3u8" in url
+
+
+def _pluto_logo(ch: dict) -> str:
+    """Best logo URL from a raw Pluto channel (schema varies)."""
+    imgs = ch.get("images")
+    if isinstance(imgs, list):
+        pref = {}
+        for i in imgs:
+            if isinstance(i, dict) and i.get("type"):
+                pref[i["type"]] = i.get("url") or i.get("path") or ""
+        for t in ("colorLogoPNG", "solidLogoPNG", "logo", "tile", "thumbnail", "featured"):
+            if pref.get(t):
+                return pref[t]
+        for i in imgs:
+            if isinstance(i, dict):
+                u = i.get("url") or i.get("path")
+                if u:
+                    return u
+    for k in ("colorLogoPNG", "solidLogoPNG", "featuredImage", "logo", "thumbnail"):
+        v = ch.get(k)
+        if isinstance(v, dict):
+            u = v.get("path") or v.get("url")
+            if u:
+                return u
+        elif isinstance(v, str) and v:
+            return v
+    return ""
 
 
 def _is_pluto_stream(url: str) -> bool:
@@ -2498,9 +2526,13 @@ STATUS_HTML = """<!DOCTYPE html>
       var row = document.createElement("div");
       row.className = "stream-row";
       row.style.cursor = "pointer";
+      var logo = ch.logo
+        ? '<img src="' + ch.logo + '" loading="lazy" alt="" style="width:40px;height:40px;object-fit:contain;flex:0 0 40px;background:rgba(255,255,255,.06);border-radius:8px;padding:4px;">'
+        : '';
       row.innerHTML =
-        '<span style="font-size:.95rem;">' + escHtml(ch.name) + '</span>' +
-        '<span style="font-family:monospace;font-size:.75rem;color:var(--muted);">LIVE →</span>';
+        '<span style="display:flex;align-items:center;gap:12px;min-width:0;">' + logo +
+        '<span style="font-size:.95rem;">' + escHtml(ch.name) + '</span></span>' +
+        '<span style="font-family:monospace;font-size:.75rem;color:var(--muted);flex:0 0 auto;">LIVE →</span>';
       row.addEventListener("click", function () {
         if (ch.id && plutoActiveLang) {
           var plutoWatchUrl = "/pluto_watch?lang=" + encodeURIComponent(plutoActiveLang) +
