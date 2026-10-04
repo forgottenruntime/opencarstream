@@ -740,24 +740,36 @@ def _parse_extinf_name(line: str) -> str:
     return ""
 
 
+def _extinf_attr(line: str, attr: str) -> str:
+    m = re.search(attr + r'="([^"]*)"', line)
+    return m.group(1).strip() if m else ""
+
+
 def _parse_iptv_m3u(content: str) -> list[dict[str, str]]:
     streams: list[dict[str, str]] = []
-    pending_name = ""
+    pending = {"name": "", "logo": "", "group": ""}
 
     for raw_line in content.splitlines():
         line = raw_line.strip()
         if not line:
             continue
         if line.startswith("#EXTINF"):
-            pending_name = _parse_extinf_name(line)
+            pending = {
+                "name": _parse_extinf_name(line),
+                "logo": _extinf_attr(line, "tvg-logo"),
+                "group": _extinf_attr(line, "group-title"),
+            }
             continue
         if line.startswith("#"):
             continue
 
-        url = line
-        name = pending_name or f"Stream {len(streams) + 1}"
-        streams.append({"name": name, "url": url})
-        pending_name = ""
+        streams.append({
+            "name": pending["name"] or f"Stream {len(streams) + 1}",
+            "url": line,
+            "logo": pending["logo"],
+            "group": pending["group"],
+        })
+        pending = {"name": "", "logo": "", "group": ""}
 
     return streams
 
@@ -2816,19 +2828,34 @@ STATUS_HTML = """<!DOCTYPE html>
     iptvStreamsEl.innerHTML = "";
     var visible = iptvStreams.filter(function (item) {
       if (!q) return true;
-      return (item.name || "").toLowerCase().indexOf(q) !== -1;
+      return (item.name || "").toLowerCase().indexOf(q) !== -1 ||
+             (item.group || "").toLowerCase().indexOf(q) !== -1;
     });
     if (!visible.length) {
       iptvStreamsEl.innerHTML = '<p class="empty">No streams match this filter.</p>';
       return;
     }
+    var lastGroup = null;
     visible.forEach(function (item) {
+      if (item.group && item.group !== lastGroup) {
+        lastGroup = item.group;
+        var hdr = document.createElement("div");
+        hdr.style.cssText = "font-family:'Orbitron',monospace;font-size:.7rem;letter-spacing:.12em;" +
+          "color:var(--muted);padding:10px 0 4px;text-transform:uppercase;" +
+          "border-top:1px solid var(--border);margin-top:4px;";
+        hdr.textContent = item.group;
+        iptvStreamsEl.appendChild(hdr);
+      }
       var row = document.createElement("div");
       row.className = "stream-row";
       row.style.cursor = "pointer";
+      var logo = item.logo
+        ? '<img src="' + item.logo + '" loading="lazy" alt="" style="width:40px;height:40px;object-fit:contain;flex:0 0 40px;background:rgba(255,255,255,.06);border-radius:8px;padding:4px;">'
+        : '';
       row.innerHTML =
-        '<span style="font-size:.95rem;">' + escHtml(item.name || item.url) + '</span>' +
-        '<span style="font-family:monospace;font-size:.75rem;color:var(--muted);">OPEN \u2192</span>';
+        '<span style="display:flex;align-items:center;gap:12px;min-width:0;">' + logo +
+        '<span style="font-size:.95rem;">' + escHtml(item.name || item.url) + '</span></span>' +
+        '<span style="font-family:monospace;font-size:.75rem;color:var(--muted);flex:0 0 auto;">OPEN \u2192</span>';
       row.addEventListener("click", function () {
         window.location.href = buildWatchUrl(item.url, iptvQuality.value, iptvSync.value, iptvMode.value);
       });
