@@ -3548,29 +3548,77 @@ WATCH_HTML = """<!DOCTYPE html>
     diag.textContent = message;
   }
 
+  // Auto-resync. Video is shown syncMs behind live (server jitter buffer), so
+  // audio.currentTime should sit at (age_s - syncMs). A flaky cellular link
+  // knocks A/V apart on reconnects and audio stalls; snap audio back to the
+  // server's current video position instead of making the user hand-nudge.
+  function doResync() {
+    if (!isFinite(audio.duration)) return;   // live stream: can't seek audio
+    var sx = new XMLHttpRequest();
+    sx.open("GET", "/stream_status?sid=" + encodeURIComponent(sid), true);
+    sx.onreadystatechange = function () {
+      if (sx.readyState !== 4 || sx.status < 200 || sx.status >= 300) return;
+      try {
+        var d = JSON.parse(sx.responseText);
+        if (typeof d.age_s !== "number") return;
+        var target = d.age_s - (parseFloat(syncMs) / 1000);
+        if (target < 0 || target > audio.duration) return;
+        if (Math.abs(audio.currentTime - target) > 0.5) {
+          audio.currentTime = target;
+          audioDelayS = parseFloat(syncMs) / 1000;
+          updateSyncDisplay();
+          resumeAudio();
+        }
+      } catch (e) {}
+    };
+    sx.send();
+  }
+
+  var videoReconnectTimer = null;
+  function reconnectVideo() {
+    img.src = "/stream" + q + "&_r=" + Date.now();  // cache-bust forces a fresh connection
+    setTimeout(doResync, 1500);                      // let video re-establish, then align audio
+  }
+
   img.addEventListener("error", function () {
     var xhr = new XMLHttpRequest();
     xhr.open("GET", "/stream_status?sid=" + encodeURIComponent(sid), true);
     xhr.onreadystatechange = function () {
       if (xhr.readyState !== 4) return;
       if (xhr.status < 200 || xhr.status >= 300) {
-        showDiag("Video stream failed to load and diagnostics request failed.");
+        // Server unreachable (connection dropped) — retry the video shortly.
+        clearTimeout(videoReconnectTimer);
+        videoReconnectTimer = setTimeout(reconnectVideo, 2000);
         return;
       }
       try {
         var data = JSON.parse(xhr.responseText);
-        var msg = [
-          "Video stream failed to load.",
-          "status: " + (data.status || "unknown"),
-          "error: " + (data.error || "n/a"),
-          "detail: " + (data.error_detail || "n/a")
-        ].join("\\n");
-        showDiag(msg);
+        if (data.status === "streaming" || data.status === "starting") {
+          // Recoverable blip: reconnect the video and realign audio.
+          clearTimeout(videoReconnectTimer);
+          videoReconnectTimer = setTimeout(reconnectVideo, 1000);
+        } else {
+          showDiag([
+            "Video stream failed to load.",
+            "status: " + (data.status || "unknown"),
+            "error: " + (data.error || "n/a"),
+            "detail: " + (data.error_detail || "n/a")
+          ].join("\\n"));
+        }
       } catch (err) {
         showDiag("Video stream failed to load and diagnostics parse failed.");
       }
     };
     xhr.send();
+  });
+
+  // Audio buffered/stalled on a flaky link then resumed behind the video —
+  // realign once it is playing again.
+  var audioWasWaiting = false;
+  audio.addEventListener("waiting", function () { audioWasWaiting = true; });
+  audio.addEventListener("stalled", function () { audioWasWaiting = true; });
+  audio.addEventListener("playing", function () {
+    if (audioWasWaiting) { audioWasWaiting = false; setTimeout(doResync, 300); }
   });
 
   // ── Seek controls ────────────────────────────────────────────────────────
