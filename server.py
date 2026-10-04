@@ -1749,6 +1749,7 @@ STATUS_HTML = """<!DOCTYPE html>
   <button class="tab-btn" data-tab="iptv">IPTV</button>
   <button class="tab-btn" data-tab="ace">Acestream</button>
   <button class="tab-btn" data-tab="local">Local Media</button>
+  <button class="tab-btn" data-tab="movies">Movies</button>
   <button class="tab-btn" data-tab="info">Info</button>
 </div>
 
@@ -2008,6 +2009,26 @@ STATUS_HTML = """<!DOCTYPE html>
     <h2>Video files</h2>
     <div class="feed-status" id="local-status">Open this tab to load local videos.</div>
     <div id="local-list"></div>
+  </div>
+</div>
+
+<!-- ── Movies tab (poster grid) ── -->
+<div class="tab-panel" id="tab-movies">
+  <div class="card">
+    <h2>Movies</h2>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;">
+      <input id="movies-search" type="search" placeholder="Search movies…"
+             style="flex:1;min-width:180px;padding:9px 12px;border-radius:8px;border:1px solid var(--border);background:#15161b;color:var(--text);font-size:.9rem;">
+      <div id="movies-sync-btns" style="display:flex;gap:6px;flex-wrap:wrap;"></div>
+      <button id="movies-refresh"
+              style="background:var(--red);color:#fff;border:0;border-radius:6px;padding:8px 14px;font-family:'Orbitron',monospace;font-size:.7rem;letter-spacing:.08em;cursor:pointer;">
+        REFRESH
+      </button>
+    </div>
+    <div class="feed-status" id="movies-status" style="margin-top:10px;">Open this tab to load your library.</div>
+  </div>
+  <div class="card">
+    <div id="movies-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:14px;"></div>
   </div>
 </div>
 
@@ -3351,6 +3372,79 @@ STATUS_HTML = """<!DOCTYPE html>
     localOpened = true;
     loadLocalDir("");
   });
+
+  // ── Movies tab (poster grid + search) ──
+  var moviesSearch  = document.getElementById("movies-search");
+  var moviesStatus  = document.getElementById("movies-status");
+  var moviesGrid    = document.getElementById("movies-grid");
+  var moviesRefresh = document.getElementById("movies-refresh");
+  var moviesSync = createButtonGroup("movies-sync-btns", [
+    { value: "0", label: "0s" }, { value: "1000", label: "1s" },
+    { value: "1500", label: "1.5s" }, { value: "2000", label: "2s" },
+    { value: "2500", label: "2.5s" }, { value: "3000", label: "3s" }
+  ], "{{local_media_video_delay_ms}}");
+  var moviesData = [];
+
+  function renderMovies(list) {
+    moviesGrid.innerHTML = "";
+    if (!list.length) {
+      var e = document.createElement("p"); e.className = "empty";
+      e.textContent = "No movies found."; moviesGrid.appendChild(e); return;
+    }
+    list.forEach(function (m) {
+      var card = document.createElement("div");
+      card.style.cssText = "cursor:pointer;display:flex;flex-direction:column;gap:6px;";
+      var img = document.createElement("img");
+      img.loading = "lazy";
+      img.src = "/poster?path=" + encodeURIComponent(m.poster);
+      img.alt = m.title;
+      img.style.cssText = "width:100%;aspect-ratio:2/3;object-fit:cover;border-radius:8px;background:#222;border:1px solid var(--border);";
+      img.onerror = function () { img.style.visibility = "hidden"; };
+      var t = document.createElement("div");
+      t.textContent = m.title + (m.year ? " (" + m.year + ")" : "");
+      t.style.cssText = "font-size:.78rem;color:var(--text);line-height:1.2;";
+      card.appendChild(img); card.appendChild(t);
+      card.addEventListener("click", function () {
+        window.location.href = "/local_watch?file=" + encodeURIComponent(m.file) +
+          "&sync=" + encodeURIComponent(moviesSync.value);
+      });
+      moviesGrid.appendChild(card);
+    });
+  }
+
+  function filterMovies() {
+    var q = (moviesSearch.value || "").toLowerCase().trim();
+    renderMovies(!q ? moviesData : moviesData.filter(function (m) {
+      return m.title.toLowerCase().indexOf(q) !== -1;
+    }));
+  }
+  moviesSearch.addEventListener("input", filterMovies);
+
+  function loadMovies(force) {
+    moviesStatus.textContent = "Loading library…";
+    moviesGrid.innerHTML = "";
+    var xhr = new XMLHttpRequest();
+    xhr.open("GET", "/movies" + (force ? "?refresh=1" : ""), true);
+    xhr.timeout = 90000;
+    xhr.onreadystatechange = function () {
+      if (xhr.readyState !== 4) return;
+      var data; try { data = JSON.parse(xhr.responseText); } catch (e) {
+        moviesStatus.textContent = "Failed to load library."; return;
+      }
+      moviesData = data.movies || [];
+      moviesStatus.textContent = moviesData.length + " movie" + (moviesData.length !== 1 ? "s" : "");
+      filterMovies();
+    };
+    xhr.ontimeout = function () { moviesStatus.textContent = "Timed out scanning library — hit REFRESH."; };
+    xhr.send();
+  }
+  moviesRefresh.addEventListener("click", function () { loadMovies(true); });
+  var moviesOpened = false;
+  document.querySelector('[data-tab="movies"]').addEventListener("click", function () {
+    if (moviesOpened) return;
+    moviesOpened = true;
+    loadMovies(false);
+  });
   } catch(e) { /* init error — non-fatal */ }
 })();
 </script>
@@ -4114,6 +4208,65 @@ def render_mp4_page(direct_url: str, error_msg: str = "", stream_title: str = ""
             .replace("{{error_msg}}", error_msg))
 
 
+# ── Movie library (poster-grid tab) ─────────────────────────────────────────
+_MOVIE_POSTERS = ("poster.jpg", "poster.png", "folder.jpg", "cover.jpg")
+_MOVIE_EXTRA_DIRS = {"trailers", "featurettes", "behind the scenes", "extras",
+                     "other", "sample", "specials", "deleted scenes", "shorts"}
+_movies_cache: dict = {"ts": 0.0, "data": None}
+_movies_lock = threading.Lock()
+
+
+def _parse_movie_name(folder: str) -> tuple[str, str]:
+    """'Title (2024) {imdb-..} [..]' -> ('Title', '2024')."""
+    m = re.match(r"^(.*?)\s*\((\d{4})\)", folder)
+    if m:
+        return m.group(1).strip(), m.group(2)
+    return folder, ""
+
+
+def _scan_movies() -> list[dict]:
+    """Movie folders (a poster image + a top-level video file) under LOCAL_MEDIA_DIR."""
+    base = os.path.abspath(LOCAL_MEDIA_DIR)
+    movies = []
+    for root, dirs, files in os.walk(base, followlinks=True):
+        dirs[:] = [d for d in dirs if d.lower() not in _MOVIE_EXTRA_DIRS]
+        lower = {f.lower(): f for f in files}
+        poster = next((lower[p] for p in _MOVIE_POSTERS if p in lower), None)
+        if not poster:
+            continue
+        vids = [f for f in files if os.path.splitext(f)[1].lower() in LOCAL_MEDIA_EXTS]
+        if not vids:
+            continue
+        if len(vids) > 1:
+            try:
+                vids.sort(key=lambda f: os.path.getsize(os.path.join(root, f)), reverse=True)
+            except OSError:
+                pass
+        rel_dir = os.path.relpath(root, base)
+        title, year = _parse_movie_name(os.path.basename(root))
+        movies.append({
+            "title": title,
+            "year": year,
+            "poster": os.path.join(rel_dir, poster),
+            "file": os.path.join(rel_dir, vids[0]),
+        })
+    movies.sort(key=lambda m: (m["title"].lower(), m["year"]))
+    return movies
+
+
+def _get_movies(force: bool = False) -> list[dict]:
+    """Cached movie list (NFS scan of 100s of folders is slow; refresh forces a rescan)."""
+    with _movies_lock:
+        now = time.time()
+        cached = _movies_cache["data"]
+        if not force and cached is not None and now - _movies_cache["ts"] < 600:
+            return cached
+        data = _scan_movies()
+        _movies_cache["data"] = data
+        _movies_cache["ts"] = now
+        return data
+
+
 # ── HTTP handler ──────────────────────────────────────────────────────────────
 class Handler(BaseHTTPRequestHandler):
     disable_nagle_algorithm = True  # TCP_NODELAY — eliminates inter-frame buffering delay
@@ -4274,6 +4427,22 @@ class Handler(BaseHTTPRequestHandler):
                 self._error(400, err)
                 return
             self._serve_file_bytes(local_file)
+
+        elif path == "/movies":
+            force = qs.get("refresh", ["0"])[0] == "1"
+            self._json({"movies": _get_movies(force=force)})
+
+        elif path == "/poster":
+            rel = unquote(qs.get("path", [None])[0] or "")
+            base = os.path.abspath(LOCAL_MEDIA_DIR)
+            target = os.path.abspath(os.path.normpath(os.path.join(base, rel)))
+            ok = (target == base or target.startswith(base + os.sep)) \
+                and os.path.isfile(target) \
+                and os.path.splitext(target)[1].lower() in (".jpg", ".jpeg", ".png", ".webp")
+            if not ok:
+                self._error(404, "Poster not found")
+                return
+            self._serve_file_bytes(target)
 
         elif path == "/local_media":
             raw_dir = qs.get("dir", [None])[0]
