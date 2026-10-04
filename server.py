@@ -3903,7 +3903,7 @@ WATCH_HTML = """<!DOCTYPE html>
 </head>
 <body>
   <div class="top">
-    <div class="title">MJPEG + AUDIO</div>
+    <div class="title">STELLA</div>
     <a class="back" href="/">← Back</a>
   </div>
   <div class="wrap">
