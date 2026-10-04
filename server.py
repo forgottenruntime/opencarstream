@@ -603,6 +603,47 @@ def _pluto_logo(ch: dict) -> str:
     return ""
 
 
+_TWITCH_WEB_CLIENT_ID = "kimne78kx3ncx6brgo4mv6wki5h1ko"  # Twitch's public web client id
+_twitch_top_cache: dict = {"ts": 0.0, "data": None}
+
+
+def _twitch_top(limit: int = 30) -> list[dict]:
+    """Top live streams via Twitch's public GraphQL (no account/app needed).
+    Cached briefly since 'live now' changes constantly."""
+    now = time.time()
+    if _twitch_top_cache["data"] is not None and now - _twitch_top_cache["ts"] < 45:
+        return _twitch_top_cache["data"]
+    q = {"query": "query{streams(first:%d){edges{node{title viewersCount "
+         "previewImageURL(width:440,height:248) game{name} "
+         "broadcaster{login displayName}}}}}" % int(limit)}
+    req = Request("https://gql.twitch.tv/gql",
+                  data=json.dumps(q).encode("utf-8"),
+                  headers={"Client-ID": _TWITCH_WEB_CLIENT_ID,
+                           "Content-Type": "application/json",
+                           "User-Agent": "Mozilla/5.0"})
+    with urlopen(req, timeout=12) as r:
+        d = json.loads(r.read().decode("utf-8", "replace"))
+    out = []
+    for e in (((d.get("data") or {}).get("streams") or {}).get("edges") or []):
+        n = e.get("node") or {}
+        b = n.get("broadcaster") or {}
+        login = b.get("login") or ""
+        if not login:
+            continue
+        thumb = (n.get("previewImageURL") or "").replace("{width}", "440").replace("{height}", "248")
+        out.append({
+            "login": login,
+            "name": b.get("displayName") or login,
+            "title": n.get("title") or "",
+            "game": (n.get("game") or {}).get("name") or "",
+            "viewers": n.get("viewersCount") or 0,
+            "thumb": thumb,
+        })
+    _twitch_top_cache["data"] = out
+    _twitch_top_cache["ts"] = now
+    return out
+
+
 def _is_pluto_stream(url: str) -> bool:
     """True for Pluto TV stitched stream URLs."""
     from urllib.parse import urlparse
@@ -1942,7 +1983,15 @@ STATUS_HTML = """<!DOCTYPE html>
     </div>
   </div>
   <div class="card">
-    <h2>Live stream</h2>
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;">
+      <h2 style="margin:0;">Live now</h2>
+      <button id="twitch-top-refresh" style="background:var(--red);color:#fff;border:0;border-radius:6px;padding:7px 13px;font-family:'Orbitron',monospace;font-size:.68rem;letter-spacing:.08em;cursor:pointer;">REFRESH</button>
+    </div>
+    <div class="feed-status" id="twitch-top-status" style="margin-top:10px;">Open this tab to load live channels.</div>
+    <div class="feed-grid" id="twitch-top-grid" style="margin-top:12px;"></div>
+  </div>
+  <div class="card">
+    <h2>Watch a channel</h2>
     <div style="display:flex;flex-direction:column;gap:10px;">
       <input id="twitch-live-channel" type="text" placeholder="channel name (e.g. xqc)" style="background:var(--input-bg);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:12px 16px;font-family:monospace;font-size:1rem;">
       <div><button id="twitch-live-go" style="background:var(--red);color:white;border:0;border-radius:8px;padding:12px 20px;font-family:'Orbitron',monospace;letter-spacing:.08em;cursor:pointer;font-size:.8rem;">WATCH LIVE</button></div>
@@ -2411,6 +2460,51 @@ STATUS_HTML = """<!DOCTYPE html>
     { value: "3500", label: "3.5s" },
     { value: "4000", label: "4s" }
   ], "{{audio_delay_ms}}");
+
+  // ── Top live (keyless Twitch browse) ──
+  var twitchTopStatus = document.getElementById("twitch-top-status");
+  var twitchTopGrid   = document.getElementById("twitch-top-grid");
+  var twitchTopRefresh = document.getElementById("twitch-top-refresh");
+  function loadTwitchTop() {
+    twitchTopStatus.textContent = "Loading live channels…";
+    twitchTopGrid.innerHTML = "";
+    var xhr = new XMLHttpRequest();
+    xhr.open("GET", "/twitch_top", true); xhr.timeout = 15000;
+    xhr.onreadystatechange = function () {
+      if (xhr.readyState !== 4) return;
+      var data; try { data = JSON.parse(xhr.responseText); } catch (e) { twitchTopStatus.textContent = "Failed to load."; return; }
+      var s = data.streams || [];
+      if (!s.length) { twitchTopStatus.textContent = "No live channels right now."; return; }
+      twitchTopStatus.textContent = s.length + " live";
+      s.forEach(function (st) {
+        var card = document.createElement("div");
+        card.className = "feed-card"; card.style.cursor = "pointer";
+        var v = st.viewers >= 1000 ? (st.viewers / 1000).toFixed(1) + "k" : st.viewers;
+        card.innerHTML =
+          '<div style="position:relative;">' +
+          '<img class="feed-thumb" src="' + st.thumb + '" loading="lazy" alt="">' +
+          '<span style="position:absolute;top:6px;left:6px;background:rgba(0,0,0,.78);color:#fff;font-size:.68rem;padding:2px 7px;border-radius:5px;"><span style="color:var(--red);">●</span> ' + v + '</span>' +
+          '</div>' +
+          '<div class="feed-info">' +
+          '<div class="feed-title">' + escHtml(st.name) + '</div>' +
+          '<div class="feed-dur">' + escHtml(st.game || st.title) + '</div>' +
+          '</div>';
+        card.addEventListener("click", function () {
+          window.location.href = buildWatchUrl("https://www.twitch.tv/" + st.login, twitchQuality.value, twitchSync.value, twitchMode.value);
+        });
+        twitchTopGrid.appendChild(card);
+      });
+    };
+    xhr.ontimeout = function () { twitchTopStatus.textContent = "Timed out — hit REFRESH."; };
+    xhr.send();
+  }
+  twitchTopRefresh.addEventListener("click", loadTwitchTop);
+  var twitchTopOpened = false;
+  document.querySelector('[data-tab="twitch"]').addEventListener("click", function () {
+    if (twitchTopOpened) return;
+    twitchTopOpened = true;
+    loadTwitchTop();
+  });
 
   twitchLiveGo.addEventListener("click", function () {
     var ch = (twitchLiveCh.value || "").trim().replace(/^@/, "");
@@ -4994,6 +5088,12 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/series":
             force = qs.get("refresh", ["0"])[0] == "1"
             self._json({"series": _get_series(force=force)})
+
+        elif path == "/twitch_top":
+            try:
+                self._json({"streams": _twitch_top()})
+            except Exception as e:
+                self._error(502, "Twitch unavailable: " + str(e))
 
         elif path == "/poster":
             rel = unquote(qs.get("path", [None])[0] or "")
