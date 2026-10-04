@@ -3082,18 +3082,22 @@ STATUS_HTML = """<!DOCTYPE html>
       xhr.send();
     }
 
-    // Use IP geolocation — works over HTTP, no browser permission needed
-    var xhr = new XMLHttpRequest();
-    xhr.open("GET", "https://ipapi.co/json/", true);
-    xhr.timeout = 6000;
-    xhr.onreadystatechange = function() {
-      if (xhr.readyState !== 4 || xhr.status !== 200) return;
-      try {
-        var d = JSON.parse(xhr.responseText);
-        if (d.latitude && d.longitude) fetchWeather(d.latitude, d.longitude, d.city || "");
-      } catch(e) {}
-    };
-    xhr.send();
+    // Mars forecast — Jezero Crater, live sol count. No network needed.
+    var marsEl = document.getElementById("weather-text");
+    if (marsEl) {
+      var landed = Date.UTC(2021, 1, 18, 20, 55, 0);          // Perseverance touchdown
+      var sol = Math.floor((Date.now() - landed) / 88775000); // 1 sol = 88775 s
+      var CONDS = [
+        {i:"🔴", d:"Clear"}, {i:"🟠", d:"Hazy"},
+        {i:"🌫️", d:"Dusty"}, {i:"🌪️", d:"Dust devils"},
+        {i:"🟤", d:"Dust storm"}
+      ];
+      var c = CONDS[sol % CONDS.length];
+      var hi = -8 - (sol % 13);     // daytime high, roughly -8…-20 C
+      var lo = -70 - (sol % 20);    // night low, roughly -70…-89 C
+      marsEl.textContent = c.i + " " + hi + "°C / " + lo + "°C  " + c.d +
+        "  ·  Jezero Crater, Mars  ·  Sol " + sol;
+    }
   })();
 
   var feedMoreWrap = document.getElementById("feed-more-wrap");
