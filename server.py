@@ -1687,7 +1687,7 @@ STATUS_HTML = """<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>OpenCarStream — Streaming </title>
+<title>Stella Stream</title>
 <script>try{var _t=localStorage.getItem("ocs_theme");if(_t)document.documentElement.setAttribute("data-theme",_t);}catch(e){}</script>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@700;900&family=Rajdhani:wght@300;500&display=swap');
@@ -1738,27 +1738,64 @@ STATUS_HTML = """<!DOCTYPE html>
   #yt-id{flex:1;min-width:300px;background:var(--input-bg);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:12px 16px;font-family:monospace;font-size:1rem;}
   select{background:var(--input-bg);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:12px 16px;font-family:monospace;font-size:1rem;}
   footer{margin-top:30px;color:var(--muted);font-size:.82rem;letter-spacing:.04em;text-align:center;max-width:1600px;line-height:1.6;}
+
+  /* ── Stella Stream · Tesla-OS shell ── */
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+  body{font-family:'Inter',system-ui,-apple-system,sans-serif;font-size:17px;padding:72px 24px 128px;}
+  .statusbar{position:fixed;top:0;left:0;right:0;z-index:50;display:flex;align-items:center;justify-content:space-between;
+    padding:13px 26px;background:color-mix(in srgb,var(--dark) 82%,transparent);backdrop-filter:blur(16px);
+    border-bottom:1px solid var(--border);}
+  .brand{display:flex;align-items:baseline;gap:10px;}
+  .brand .mark{font-weight:800;font-size:1.18rem;letter-spacing:.42em;color:var(--text);}
+  .brand .sub2{font-weight:500;font-size:.8rem;letter-spacing:.3em;color:var(--muted);}
+  .brand .star{color:var(--red);font-size:1rem;align-self:center;}
+  .statusline{display:flex;align-items:center;gap:18px;}
+  .statusline .clock{font-weight:600;font-size:1.06rem;color:var(--text);font-variant-numeric:tabular-nums;letter-spacing:.03em;}
+  .statusline .net{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:.84rem;}
+  .statusline .dot{width:9px;height:9px;border-radius:50%;background:#30d158;box-shadow:0 0 9px rgba(48,209,88,.7);}
+  /* home launcher */
+  #tab-home h2.home-h{font-weight:600;font-size:1.5rem;color:var(--text);margin:4px 2px 20px;letter-spacing:-.01em;}
+  .app-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(188px,1fr));gap:18px;}
+  .app-tile{display:flex;flex-direction:column;gap:14px;min-height:148px;padding:22px;border-radius:24px;cursor:pointer;
+    background:var(--panel);border:1px solid var(--border);transition:transform .14s ease,border-color .14s ease,background .14s ease;}
+  .app-tile:hover,.app-tile:focus-visible{transform:translateY(-3px);border-color:var(--red);background:var(--thumb-bg);outline:none;}
+  .app-tile .ico{color:var(--text);}
+  .app-tile .ico svg{width:38px;height:38px;}
+  .app-tile .t-label{font-size:1.16rem;font-weight:600;color:var(--text);margin-top:auto;}
+  .app-tile .t-desc{font-size:.84rem;color:var(--muted);}
+  /* dock */
+  .dock{position:fixed;left:50%;transform:translateX(-50%);bottom:16px;z-index:60;display:flex;gap:3px;padding:8px;
+    border-radius:24px;background:color-mix(in srgb,var(--panel) 92%,transparent);backdrop-filter:blur(18px);
+    border:1px solid var(--border);box-shadow:0 14px 48px rgba(0,0,0,.55);max-width:calc(100vw - 20px);overflow-x:auto;}
+  .dock::-webkit-scrollbar{display:none;}
+  .dock-btn{flex:0 0 auto;display:flex;flex-direction:column;align-items:center;gap:4px;width:64px;padding:9px 4px;border:0;
+    border-radius:17px;background:transparent;color:var(--muted);cursor:pointer;font-family:inherit;font-size:.62rem;
+    font-weight:500;letter-spacing:.01em;transition:color .13s,background .13s;}
+  .dock-btn svg{width:23px;height:23px;}
+  .dock-btn:hover{color:var(--text);background:var(--thumb-bg);}
+  .dock-btn.active{color:#fff;background:var(--red);}
+  .app-tile svg,.dock-btn svg{stroke:currentColor;fill:none;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;}
+  .card{border-radius:20px;}
+  @media(max-width:560px){.statusbar .sub2{display:none;} body{padding:66px 14px 120px;} .app-grid{grid-template-columns:repeat(auto-fill,minmax(150px,1fr));}}
 </style>
 </head>
 <body>
-<h1>OPENCARSTREAM</h1>
-<p class="sub">A third-party streaming launcher  browser</p>
+<div class="statusbar">
+  <div class="brand"><span class="star">&#9650;</span><span class="mark">STELLA</span><span class="sub2">stream</span></div>
+  <div class="statusline">
+    <span class="clock" id="clock">--:--</span>
+    <span class="net"><span class="dot"></span>online</span>
+  </div>
+</div>
 
-<div class="tabs">
-  <button class="tab-btn active" data-tab="stream">Stream</button>
-  <button class="tab-btn" data-tab="feed">YouTube</button>
-  <button class="tab-btn" data-tab="twitch">Twitch</button>
-  <button class="tab-btn" data-tab="pluto">Pluto TV</button>
-  <button class="tab-btn" data-tab="iptv">IPTV</button>
-  <button class="tab-btn" data-tab="ace">Acestream</button>
-  <button class="tab-btn" data-tab="local">Local Media</button>
-  <button class="tab-btn" data-tab="movies">Movies</button>
-  <button class="tab-btn" data-tab="info">Info</button>
-  <button id="theme-toggle" class="tab-btn" style="margin-left:auto;" title="Toggle light / dark">Theme</button>
+<!-- ── Home launcher ── -->
+<div class="tab-panel active" id="tab-home">
+  <h2 class="home-h">Good drive, Bart</h2>
+  <div class="app-grid" id="app-grid"></div>
 </div>
 
 <!-- ── Stream tab ── -->
-<div class="tab-panel active" id="tab-stream">
+<div class="tab-panel" id="tab-stream">
   <div class="card">
     <h2>Start stream</h2>
     <p style="font-size:.85rem;color:var(--muted);margin-bottom:12px;">
@@ -2068,7 +2105,9 @@ STATUS_HTML = """<!DOCTYPE html>
   </div>
 </div>
 
-<footer> YouTube is a trademark of Google LLC, Twitch is a trademark of Twitch Interactive, Inc., and X/Twitter is a trademark of X Corp.; OpenCarStream is not affiliated with or endorsed by any of them.</footer>
+<nav class="dock" id="dock"></nav>
+
+<footer> YouTube is a trademark of Google LLC, Twitch is a trademark of Twitch Interactive, Inc., and X/Twitter is a trademark of X Corp.; Stella Stream is not affiliated with or endorsed by any of them.</footer>
 <p id="weather-text" style="margin-top:10px;color:var(--muted);font-size:.85rem;text-align:center;"></p>
 
 <script>
@@ -2084,19 +2123,86 @@ STATUS_HTML = """<!DOCTYPE html>
 </script>
 <script>
 (function () {
-  // ── Tab switching ──
-  var tabBtns = document.querySelectorAll(".tab-btn");
-  var tabPanels = document.querySelectorAll(".tab-panel");
-  Array.prototype.forEach.call(tabBtns, function (btn) {
-    btn.addEventListener("click", function () {
-      var target = btn.getAttribute("data-tab");
-      Array.prototype.forEach.call(tabBtns, function (b) { b.classList.remove("active"); });
-      Array.prototype.forEach.call(tabPanels, function (p) { p.classList.remove("active"); });
-      btn.classList.add("active");
-      var panel = document.getElementById("tab-" + target);
-      if (panel) panel.classList.add("active");
+  // ── Stella Stream shell: launcher tiles + bottom dock + clock ──
+  var ICONS = {
+    home:'<svg viewBox="0 0 24 24"><path d="M3 11l9-8 9 8"/><path d="M5 10v10h14V10"/></svg>',
+    movies:'<svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 4v16M17 4v16M3 9h4M3 15h4M17 9h4M17 15h4"/></svg>',
+    feed:'<svg viewBox="0 0 24 24"><rect x="2" y="5" width="20" height="14" rx="4"/><path d="M10 9l5 3-5 3z" fill="currentColor" stroke="none"/></svg>',
+    stream:'<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M10 9l5 3-5 3z" fill="currentColor" stroke="none"/></svg>',
+    pluto:'<svg viewBox="0 0 24 24"><rect x="3" y="7" width="18" height="12" rx="2"/><path d="M8 3l4 4 4-4"/></svg>',
+    twitch:'<svg viewBox="0 0 24 24"><path d="M5 3h15v11l-4 4h-4l-3 3H7v-3H4V6z"/><path d="M11 8v4M15 8v4"/></svg>',
+    iptv:'<svg viewBox="0 0 24 24"><path d="M8 6h13M8 12h13M8 18h13M3.5 6h.01M3.5 12h.01M3.5 18h.01"/></svg>',
+    ace:'<svg viewBox="0 0 24 24"><circle cx="6" cy="12" r="2.3"/><circle cx="18" cy="6" r="2.3"/><circle cx="18" cy="18" r="2.3"/><path d="M8 11l8-4M8 13l8 4"/></svg>',
+    local:'<svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z"/></svg>',
+    info:'<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v5"/><circle cx="12" cy="7.6" r=".7" fill="currentColor" stroke="none"/></svg>',
+    theme:'<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 000 18z" fill="currentColor" stroke="none"/></svg>'
+  };
+  var SECTIONS = [
+    {k:"movies", label:"Movies",      desc:"Your film library"},
+    {k:"feed",   label:"YouTube",     desc:"Search & channels"},
+    {k:"stream", label:"Stream",      desc:"Paste any link"},
+    {k:"pluto",  label:"Pluto TV",    desc:"Free live TV"},
+    {k:"twitch", label:"Twitch",      desc:"Live & VODs"},
+    {k:"iptv",   label:"IPTV",        desc:"Your playlists"},
+    {k:"ace",    label:"Acestream",   desc:"P2P streams"},
+    {k:"local",  label:"Local Media", desc:"Browse files"},
+    {k:"info",   label:"Info",        desc:"API & status"}
+  ];
+  var allPanels = document.querySelectorAll(".tab-panel");
+  function showSection(k) {
+    Array.prototype.forEach.call(allPanels, function (p) { p.classList.remove("active"); });
+    var panel = document.getElementById("tab-" + k);
+    if (panel) panel.classList.add("active");
+    Array.prototype.forEach.call(document.querySelectorAll(".dock-btn"), function (b) {
+      b.classList.toggle("active", b.getAttribute("data-tab") === k);
     });
+    window.scrollTo(0, 0);
+  }
+  var appGrid = document.getElementById("app-grid");
+  SECTIONS.forEach(function (s) {
+    var tile = document.createElement("div");
+    tile.className = "app-tile";
+    tile.setAttribute("tabindex", "0");
+    tile.innerHTML = '<span class="ico">' + (ICONS[s.k] || "") + '</span>' +
+                     '<span class="t-label">' + s.label + '</span>' +
+                     '<span class="t-desc">' + s.desc + '</span>';
+    tile.addEventListener("click", function () {
+      var b = document.querySelector('.dock-btn[data-tab="' + s.k + '"]');
+      if (b) { b.click(); } else { showSection(s.k); }
+    });
+    tile.addEventListener("keydown", function (e) {
+      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); tile.click(); }
+    });
+    appGrid.appendChild(tile);
   });
+  var dock = document.getElementById("dock");
+  function makeDockBtn(k, label, icon) {
+    var b = document.createElement("button");
+    b.className = "dock-btn";
+    if (k) b.setAttribute("data-tab", k);
+    b.innerHTML = (icon || "") + "<span>" + label + "</span>";
+    return b;
+  }
+  var homeBtn = makeDockBtn("home", "Home", ICONS.home);
+  homeBtn.addEventListener("click", function () { showSection("home"); });
+  dock.appendChild(homeBtn);
+  SECTIONS.forEach(function (s) {
+    var b = makeDockBtn(s.k, s.label, ICONS[s.k]);
+    b.addEventListener("click", function () { showSection(s.k); });
+    dock.appendChild(b);
+  });
+  var _themeDockBtn = makeDockBtn("", "Theme", ICONS.theme);
+  _themeDockBtn.id = "theme-toggle";
+  dock.appendChild(_themeDockBtn);
+  showSection("home");
+  (function clock() {
+    var el = document.getElementById("clock");
+    if (el) {
+      var d = new Date(), h = d.getHours(), m = d.getMinutes();
+      el.textContent = (h < 10 ? "0" + h : h) + ":" + (m < 10 ? "0" + m : m);
+    }
+    setTimeout(clock, 15000);
+  })();
 
   try {
   // ── Shared utilities ──
@@ -3109,7 +3215,8 @@ STATUS_HTML = """<!DOCTYPE html>
     return (window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches) ? "light" : "dark";
   }
   function applyThemeLabel() {
-    themeToggle.textContent = currentTheme() === "dark" ? "☀ Light" : "☾ Dark";
+    var lbl = themeToggle.querySelector("span");
+    if (lbl) lbl.textContent = currentTheme() === "dark" ? "Light" : "Dark";
   }
   themeToggle.addEventListener("click", function () {
     var next = currentTheme() === "dark" ? "light" : "dark";
