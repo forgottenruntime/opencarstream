@@ -2114,7 +2114,7 @@ STATUS_HTML = """<!DOCTYPE html>
     <svg viewBox="0 0 24 24" style="width:20px;height:20px;fill:currentColor;stroke:none;" aria-label="spark"><path d="M12 2.5l1.9 6L20 10l-6.1 1.5L12 17.5l-1.9-6L4 10l6.1-1.5z"/></svg>
   </div>
   <div style="font-size:.92rem;color:var(--text);font-weight:600;letter-spacing:.02em;display:flex;align-items:center;justify-content:center;gap:7px;flex-wrap:wrap;">Made by the best intelligences.<svg viewBox="0 0 24 24" style="width:15px;height:15px;fill:none;stroke:var(--red);stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3 3 15 0 18M12 3c-3 3-3 15 0 18"/></svg><span style="color:var(--muted);font-weight:400;">Soon we leave this planet.</span></div>
-  <div style="font-size:.85rem;color:var(--muted);margin:5px auto 0;max-width:620px;font-style:italic;line-height:1.45;">&ldquo;Failure is an option here. If things are not failing, you are not innovating enough.&rdquo; <span style="color:var(--red);font-style:normal;">— Elon Musk</span></div>
+  <div style="font-size:.85rem;color:var(--muted);margin-top:6px;font-style:italic;line-height:1.45;">&ldquo;Failure is an option here. If things are not failing, you are not innovating enough.&rdquo; <span style="color:var(--red);font-style:normal;white-space:nowrap;">— Elon Musk</span></div>
 </footer>
 <p id="weather-text" style="margin-top:10px;color:var(--muted);font-size:.85rem;text-align:center;"></p>
 
