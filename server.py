@@ -802,6 +802,79 @@ def _parse_iptv_m3u(content: str) -> list[dict[str, str]]:
     return streams
 
 
+# ── IPTV channel health (probe; dead channels sort to the bottom) ──
+_IPTV_HEALTH_FILE = os.path.join(os.path.dirname(PROGRESS_FILE) or "/config", "iptv_health.json")
+_iptv_health: dict = {}
+_iptv_check: dict = {}
+_iptv_health_lock = threading.Lock()
+
+
+def _load_iptv_health() -> None:
+    global _iptv_health
+    try:
+        with open(_IPTV_HEALTH_FILE, encoding="utf-8") as f:
+            _iptv_health = json.load(f)
+    except Exception:
+        _iptv_health = {}
+
+
+def _probe_stream(url: str) -> bool:
+    """Quick liveness probe with the channel's declared headers."""
+    hdr = _iptv_headers.get(url) or {}
+    headers = {"User-Agent": hdr.get("user_agent") or _BROWSER_UA}
+    ref = hdr.get("referrer")
+    if ref:
+        headers["Referer"] = ref
+        p = urlparse(ref)
+        if p.scheme and p.netloc:
+            headers["Origin"] = p.scheme + "://" + p.netloc
+    try:
+        with urlopen(Request(url, headers=headers), timeout=6) as r:
+            if getattr(r, "status", 200) >= 400:
+                return False
+            chunk = r.read(1024)
+        low = url.lower()
+        if ".m3u8" in low:
+            return b"#EXT" in chunk
+        if ".mpd" in low:
+            return b"<MPD" in chunk or b"<?xml" in chunk
+        return bool(chunk)
+    except Exception:
+        return False
+
+
+def _run_iptv_check(list_id: str, urls: list) -> None:
+    st = _iptv_check.setdefault(list_id, {})
+    st.update({"running": True, "done": 0, "total": len(urls)})
+    try:
+        with ThreadPoolExecutor(max_workers=40) as ex:
+            futs = {ex.submit(_probe_stream, u): u for u in urls}
+            for fut in as_completed(futs):
+                try:
+                    ok = fut.result()
+                except Exception:
+                    ok = False
+                with _iptv_health_lock:
+                    _iptv_health[futs[fut]] = ok
+                st["done"] += 1
+    finally:
+        st["running"] = False
+        with _iptv_health_lock:
+            try:
+                with open(_IPTV_HEALTH_FILE, "w", encoding="utf-8") as f:
+                    json.dump(_iptv_health, f)
+            except Exception:
+                pass
+
+
+def _iptv_rank(url: str) -> int:
+    v = _iptv_health.get(url)
+    return 0 if v is True else (2 if v is False else 1)
+
+
+_load_iptv_health()
+
+
 _ace_streams_lock = threading.Lock()
 
 def _load_ace_streams() -> list[dict]:
@@ -2113,6 +2186,10 @@ STATUS_HTML = """<!DOCTYPE html>
               style="background:var(--red);color:white;border:0;border-radius:6px;padding:8px 14px;font-family:'Orbitron',monospace;font-size:.7rem;letter-spacing:.08em;cursor:pointer;">
         REFRESH
       </button>
+      <button id="iptv-check" title="Test all channels, dead ones go to the bottom"
+              style="background:transparent;color:var(--text);border:1px solid var(--border);border-radius:6px;padding:8px 14px;font-family:'Orbitron',monospace;font-size:.7rem;letter-spacing:.08em;cursor:pointer;">
+        CHECK
+      </button>
     </div>
     <input id="iptv-filter" type="text" placeholder="Filter streams..."
            style="width:100%;background:var(--input-bg);color:var(--text);border:1px solid var(--border);border-radius:6px;padding:8px 12px;font-family:monospace;margin-bottom:12px;">
@@ -2891,13 +2968,15 @@ STATUS_HTML = """<!DOCTYPE html>
       var row = document.createElement("div");
       row.className = "stream-row";
       row.style.cursor = "pointer";
+      var dead = item.alive === false;
+      if (dead) row.style.opacity = "0.4";
       var logo = item.logo
         ? '<img src="' + item.logo + '" loading="lazy" alt="" style="width:40px;height:40px;object-fit:contain;flex:0 0 40px;background:rgba(255,255,255,.06);border-radius:8px;padding:4px;">'
         : '';
       row.innerHTML =
         '<span style="display:flex;align-items:center;gap:12px;min-width:0;">' + logo +
         '<span style="font-size:.95rem;">' + escHtml(item.name || item.url) + '</span></span>' +
-        '<span style="font-family:monospace;font-size:.75rem;color:var(--muted);flex:0 0 auto;">OPEN \u2192</span>';
+        '<span style="font-family:monospace;font-size:.75rem;color:var(--muted);flex:0 0 auto;">' + (dead ? 'OFFLINE' : 'OPEN \u2192') + '</span>';
       row.addEventListener("click", function () {
         window.location.href = buildWatchUrl(item.url, iptvQuality.value, iptvSync.value, iptvMode.value);
       });
@@ -2972,6 +3051,38 @@ STATUS_HTML = """<!DOCTYPE html>
   }
 
   iptvRefreshBtn.addEventListener("click", function () { loadIptvLists(false); });
+
+  var iptvCheckBtn = document.getElementById("iptv-check");
+  var iptvCheckPoll = null;
+  iptvCheckBtn.addEventListener("click", function () {
+    var listId = selectedIptvListId();
+    if (!listId) return;
+    iptvCheckBtn.disabled = true;
+    iptvStatus.textContent = "Checking channels…";
+    var start = new XMLHttpRequest();
+    start.open("GET", "/iptv_check?list=" + encodeURIComponent(listId), true);
+    start.onreadystatechange = function () {
+      if (start.readyState !== 4) return;
+      clearInterval(iptvCheckPoll);
+      iptvCheckPoll = setInterval(function () {
+        var st = new XMLHttpRequest();
+        st.open("GET", "/iptv_check_status?list=" + encodeURIComponent(listId), true);
+        st.onreadystatechange = function () {
+          if (st.readyState !== 4) return;
+          var d; try { d = JSON.parse(st.responseText); } catch (e) { return; }
+          iptvStatus.textContent = "Checking channels… " + (d.done || 0) + "/" + (d.total || 0);
+          if (!d.running) {
+            clearInterval(iptvCheckPoll);
+            iptvCheckBtn.disabled = false;
+            loadIptvStreams();  // reload, now sorted (dead at the bottom)
+          }
+        };
+        st.send();
+      }, 2000);
+    };
+    start.send();
+  });
+
   iptvFilter.addEventListener("input", function () {
     if (!iptvStreams.length) return;
     var selected = iptvLists.find(function (item) { return item.id === selectedIptvListId(); }) || {name: "selected list"};
@@ -5164,6 +5275,28 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as e:
                 self._error(502, "Twitch unavailable: " + str(e))
 
+        elif path == "/iptv_check":
+            raw_list = qs.get("list", [None])[0]
+            target, err = self._resolve_iptv_list_path(raw_list)
+            if not target:
+                self._error(400, err)
+                return
+            if _iptv_check.get(raw_list, {}).get("running"):
+                self._json(_iptv_check[raw_list])
+                return
+            try:
+                with open(target, encoding="utf-8", errors="replace") as f:
+                    urls = [s["url"] for s in _parse_iptv_m3u(f.read())]
+            except Exception as e:
+                self._error(500, str(e))
+                return
+            threading.Thread(target=_run_iptv_check, args=(raw_list, urls), daemon=True).start()
+            self._json({"running": True, "done": 0, "total": len(urls)})
+
+        elif path == "/iptv_check_status":
+            raw_list = qs.get("list", [None])[0]
+            self._json(_iptv_check.get(raw_list, {"running": False, "done": 0, "total": 0}))
+
         elif path == "/poster":
             rel = unquote(qs.get("path", [None])[0] or "")
             base = os.path.abspath(LOCAL_MEDIA_DIR)
@@ -5650,6 +5783,9 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         streams = _parse_iptv_m3u(content)
+        streams.sort(key=lambda s: _iptv_rank(s["url"]))  # alive first, unchecked, dead last
+        for s in streams:
+            s["alive"] = _iptv_health.get(s["url"])
         self._json({
             "list": {
                 "name": os.path.splitext(os.path.basename(target))[0],
