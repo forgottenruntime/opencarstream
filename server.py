@@ -2023,7 +2023,17 @@ STATUS_HTML = """<!DOCTYPE html>
     <h2>Movies</h2>
     <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;">
       <input id="movies-search" type="search" placeholder="Search movies…"
-             style="flex:1;min-width:180px;padding:9px 12px;border-radius:8px;border:1px solid var(--border);background:#15161b;color:var(--text);font-size:.9rem;">
+             style="flex:1;min-width:150px;padding:9px 12px;border-radius:8px;border:1px solid var(--border);background:#15161b;color:var(--text);font-size:.9rem;">
+      <select id="movies-sort" style="padding:9px 10px;border-radius:8px;border:1px solid var(--border);background:#15161b;color:var(--text);font-size:.85rem;">
+        <option value="recent">Recently added</option>
+        <option value="title">Title A–Z</option>
+        <option value="title_desc">Title Z–A</option>
+        <option value="year_desc">Year (newest)</option>
+        <option value="year_asc">Year (oldest)</option>
+      </select>
+      <select id="movies-genre" style="padding:9px 10px;border-radius:8px;border:1px solid var(--border);background:#15161b;color:var(--text);font-size:.85rem;">
+        <option value="">All genres</option>
+      </select>
       <div id="movies-sync-btns" style="display:flex;gap:6px;flex-wrap:wrap;"></div>
       <button id="movies-refresh"
               style="background:var(--red);color:#fff;border:0;border-radius:6px;padding:8px 14px;font-family:'Orbitron',monospace;font-size:.7rem;letter-spacing:.08em;cursor:pointer;">
@@ -3476,13 +3486,44 @@ STATUS_HTML = """<!DOCTYPE html>
     });
   }
 
+  var moviesSort  = document.getElementById("movies-sort");
+  var moviesGenre = document.getElementById("movies-genre");
+
+  function populateGenres() {
+    var set = {};
+    moviesData.forEach(function (m) { (m.genres || []).forEach(function (g) { set[g] = 1; }); });
+    var cur = moviesGenre.value;
+    moviesGenre.innerHTML = '<option value="">All genres</option>';
+    Object.keys(set).sort().forEach(function (g) {
+      var o = document.createElement("option"); o.value = g; o.textContent = g;
+      moviesGenre.appendChild(o);
+    });
+    moviesGenre.value = cur || "";
+  }
+
+  function sortMovies(list) {
+    var s = moviesSort.value, a = list.slice();
+    if (s === "recent") a.sort(function (x, y) { return (y.added || 0) - (x.added || 0); });
+    else if (s === "title") a.sort(function (x, y) { return x.title.toLowerCase().localeCompare(y.title.toLowerCase()); });
+    else if (s === "title_desc") a.sort(function (x, y) { return y.title.toLowerCase().localeCompare(x.title.toLowerCase()); });
+    else if (s === "year_desc") a.sort(function (x, y) { return (parseInt(y.year, 10) || 0) - (parseInt(x.year, 10) || 0); });
+    else if (s === "year_asc") a.sort(function (x, y) { return (parseInt(x.year, 10) || 0) - (parseInt(y.year, 10) || 0); });
+    return a;
+  }
+
   function filterMovies() {
     var q = (moviesSearch.value || "").toLowerCase().trim();
-    renderMovies(!q ? moviesData : moviesData.filter(function (m) {
-      return m.title.toLowerCase().indexOf(q) !== -1;
-    }));
+    var g = moviesGenre.value;
+    var list = moviesData.filter(function (m) {
+      if (q && m.title.toLowerCase().indexOf(q) === -1) return false;
+      if (g && (m.genres || []).indexOf(g) === -1) return false;
+      return true;
+    });
+    renderMovies(sortMovies(list));
   }
   moviesSearch.addEventListener("input", filterMovies);
+  moviesSort.addEventListener("change", filterMovies);
+  moviesGenre.addEventListener("change", filterMovies);
 
   function loadMovies(force) {
     moviesStatus.textContent = "Loading library…";
@@ -3497,6 +3538,7 @@ STATUS_HTML = """<!DOCTYPE html>
       }
       moviesData = data.movies || [];
       moviesStatus.textContent = moviesData.length + " movie" + (moviesData.length !== 1 ? "s" : "");
+      populateGenres();
       filterMovies();
     };
     xhr.ontimeout = function () { moviesStatus.textContent = "Timed out scanning library — hit REFRESH."; };
@@ -4288,8 +4330,34 @@ def _parse_movie_name(folder: str) -> tuple[str, str]:
     return folder, ""
 
 
+def _read_nfo_meta(root: str, files: list[str]) -> tuple[str | None, str | None, list[str]]:
+    """(title, year, genres) from a movie .nfo in the folder, if present. Regex, not
+    full XML — these fields are simple and the files vary."""
+    nfo = next((f for f in files if f.lower() == "movie.nfo"), None) \
+        or next((f for f in files if f.lower().endswith(".nfo")), None)
+    if not nfo:
+        return None, None, []
+    try:
+        with open(os.path.join(root, nfo), "r", encoding="utf-8", errors="replace") as fh:
+            text = fh.read(32768)
+    except OSError:
+        return None, None, []
+    tm = re.search(r"<title>([^<]+)</title>", text)
+    ym = re.search(r"<year>(\d{4})</year>", text)
+    genres = []
+    for g in re.findall(r"<genre>([^<]+)</genre>", text):
+        g = g.strip()
+        if g and g not in genres:
+            genres.append(g)
+    return (tm.group(1).strip() if tm else None,
+            ym.group(1) if ym else None,
+            genres)
+
+
 def _scan_movies() -> list[dict]:
-    """Movie folders (a poster image + a top-level video file) under LOCAL_MEDIA_DIR."""
+    """Movie folders (a poster image + a top-level video file) under LOCAL_MEDIA_DIR.
+    Reads movie.nfo for clean title + year + genres, and the video mtime for
+    'recently added' sorting."""
     base = os.path.abspath(LOCAL_MEDIA_DIR)
     movies = []
     for root, dirs, files in os.walk(base, followlinks=True):
@@ -4307,12 +4375,20 @@ def _scan_movies() -> list[dict]:
             except OSError:
                 pass
         rel_dir = os.path.relpath(root, base)
-        title, year = _parse_movie_name(os.path.basename(root))
+        f_title, f_year = _parse_movie_name(os.path.basename(root))
+        nfo_title, nfo_year, genres = _read_nfo_meta(root, files)
+        video_path = os.path.join(root, vids[0])
+        try:
+            added = int(os.path.getmtime(video_path))
+        except OSError:
+            added = 0
         movies.append({
-            "title": title,
-            "year": year,
+            "title": nfo_title or f_title,
+            "year": nfo_year or f_year,
             "poster": os.path.join(rel_dir, poster),
             "file": os.path.join(rel_dir, vids[0]),
+            "genres": genres,
+            "added": added,
         })
     movies.sort(key=lambda m: (m["title"].lower(), m["year"]))
     return movies
