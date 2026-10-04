@@ -2084,6 +2084,27 @@ STATUS_HTML = """<!DOCTYPE html>
   </div>
 </div>
 
+<!-- ── TV Series tab ── -->
+<div class="tab-panel" id="tab-series">
+  <div class="card">
+    <h2>TV Series</h2>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;">
+      <input id="series-search" type="search" placeholder="Search shows…"
+             style="flex:1;min-width:150px;padding:9px 12px;border-radius:8px;border:1px solid var(--border);background:#15161b;color:var(--text);font-size:.9rem;">
+      <div id="series-sync-btns" style="display:flex;gap:6px;flex-wrap:wrap;"></div>
+      <button id="series-refresh"
+              style="background:var(--red);color:#fff;border:0;border-radius:6px;padding:8px 14px;font-family:'Orbitron',monospace;font-size:.7rem;letter-spacing:.08em;cursor:pointer;">
+        REFRESH
+      </button>
+    </div>
+    <div class="feed-status" id="series-status" style="margin-top:10px;">Open this tab to load your shows.</div>
+  </div>
+  <div class="card">
+    <div id="series-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:14px;"></div>
+    <div id="series-detail" style="display:none;"></div>
+  </div>
+</div>
+
 <!-- ── Info tab ── -->
 <div class="tab-panel" id="tab-info">
   <div class="card">
@@ -2143,16 +2164,17 @@ STATUS_HTML = """<!DOCTYPE html>
     ace:'<svg viewBox="0 0 24 24"><circle cx="6" cy="12" r="2.3"/><circle cx="18" cy="6" r="2.3"/><circle cx="18" cy="18" r="2.3"/><path d="M8 11l8-4M8 13l8 4"/></svg>',
     local:'<svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z"/></svg>',
     info:'<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v5"/><circle cx="12" cy="7.6" r=".7" fill="currentColor" stroke="none"/></svg>',
+    series:'<svg viewBox="0 0 24 24"><rect x="3" y="7" width="14" height="13" rx="2"/><path d="M8 7V4h10a2 2 0 012 2v11a2 2 0 01-2 2h-1"/><path d="M8.5 11.5l4 2.2-4 2.2z" fill="currentColor" stroke="none"/></svg>',
     theme:'<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 000 18z" fill="currentColor" stroke="none"/></svg>'
   };
   var SECTIONS = [
     {k:"movies", label:"Movies",      desc:"Your film library"},
+    {k:"series", label:"TV Series",   desc:"Shows & seasons"},
     {k:"feed",   label:"YouTube",     desc:"Search & channels"},
     {k:"stream", label:"Stream",      desc:"Paste any link"},
     {k:"pluto",  label:"Pluto TV",    desc:"Free live TV"},
     {k:"twitch", label:"Twitch",      desc:"Live & VODs"},
     {k:"iptv",   label:"IPTV",        desc:"Your playlists"},
-    {k:"ace",    label:"Acestream",   desc:"P2P streams"},
     {k:"local",  label:"Local Media", desc:"Browse files"},
     {k:"info",   label:"Info",        desc:"API & status"}
   ];
@@ -3037,62 +3059,68 @@ STATUS_HTML = """<!DOCTYPE html>
 
   subsFilter.addEventListener("input", applyFilter);
 
-  // ── Weather (IP-based, no geolocation API needed) ──────────────────────
-  (function initWeather() {
-    var WMO_ICONS = {
-      0:"☀️",1:"🌤️",2:"⛅",3:"☁️",45:"🌫️",48:"🌫️",
-      51:"🌦️",53:"🌦️",55:"🌧️",61:"🌧️",63:"🌧️",65:"🌧️",
-      71:"🌨️",73:"🌨️",75:"❄️",80:"🌦️",81:"🌧️",82:"⛈️",
-      95:"⛈️",96:"⛈️",99:"⛈️"
-    };
-    var WMO_DESC = {
-      0:"Clear sky",1:"Mainly clear",2:"Partly cloudy",3:"Overcast",
-      45:"Fog",48:"Icy fog",51:"Light drizzle",53:"Drizzle",55:"Heavy drizzle",
-      61:"Light rain",63:"Rain",65:"Heavy rain",71:"Light snow",73:"Snow",
-      75:"Heavy snow",80:"Showers",81:"Rain showers",82:"Violent showers",
-      95:"Thunderstorm",96:"Thunderstorm w/ hail",99:"Thunderstorm w/ heavy hail"
-    };
+  // ── Space weather — tap to cycle Mars · Moon · Sun · Earth ─────────────
+  (function initSpaceWeather() {
+    var el = document.getElementById("weather-text");
+    if (!el) return;
+    var MODES = ["mars", "moon", "sun", "earth"];
+    var idx = 0;
+    try { var sv = localStorage.getItem("ocs_wx"); var i = MODES.indexOf(sv); if (i >= 0) idx = i; } catch (e) {}
+    el.style.cursor = "pointer";
+    el.title = "Tap to change world";
 
-    function showWeatherText(temp, code, city) {
-      var el = document.getElementById("weather-text");
-      if (!el) return;
-      var icon = WMO_ICONS[code] || "🌡️";
-      var desc = WMO_DESC[code] || "";
-      el.textContent = icon + " " + Math.round(temp) + "°C  " + desc + (city ? "  ·  " + city : "");
+    function mars() {
+      var landed = Date.UTC(2021, 1, 18, 20, 55, 0);
+      var sol = Math.floor((Date.now() - landed) / 88775000);
+      var C = [{i:"🔴",d:"Clear"},{i:"🟠",d:"Hazy"},{i:"🌫️",d:"Dusty"},{i:"🌪️",d:"Dust devils"},{i:"🟤",d:"Dust storm"}];
+      var c = C[sol % C.length];
+      el.textContent = c.i + " " + (-8 - (sol % 13)) + "°C / " + (-70 - (sol % 20)) + "°C  " +
+        c.d + "  ·  Jezero Crater, Mars  ·  Sol " + sol;
     }
-
-    function fetchWeather(lat, lon, city) {
-      var xhr = new XMLHttpRequest();
-      xhr.open("GET", "https://api.open-meteo.com/v1/forecast?latitude=" + lat +
-               "&longitude=" + lon + "&current_weather=true&forecast_days=1", true);
-      xhr.timeout = 8000;
-      xhr.onreadystatechange = function() {
-        if (xhr.readyState !== 4 || xhr.status !== 200) return;
+    function moon() {
+      var syn = 29.530588853;
+      var days = (Date.now() - Date.UTC(2000, 0, 6, 18, 14, 0)) / 86400000;
+      var phase = ((days % syn) + syn) % syn;
+      var names = ["New","Waxing crescent","First quarter","Waxing gibbous","Full","Waning gibbous","Last quarter","Waning crescent"];
+      var glyph = ["🌑","🌒","🌓","🌔","🌕","🌖","🌗","🌘"];
+      var k = Math.floor(phase / syn * 8 + 0.5) % 8;
+      el.textContent = glyph[k] + " 127°C / -173°C  " + names[k] + "  ·  Sea of Tranquility, Moon";
+    }
+    function sun() {
+      el.textContent = "☀️ 5,505°C  Mostly plasma, chance of flares  ·  Photosphere, the Sun";
+    }
+    function earth() {
+      el.textContent = "🌍 loading…  ·  Earth";
+      var g = new XMLHttpRequest();
+      g.open("GET", "https://ipapi.co/json/", true); g.timeout = 6000;
+      g.onreadystatechange = function () {
+        if (g.readyState !== 4 || g.status !== 200) return;
         try {
-          var d = JSON.parse(xhr.responseText);
-          var cw = d.current_weather;
-          showWeatherText(cw.temperature, cw.weathercode, city);
-        } catch(e) {}
+          var d = JSON.parse(g.responseText);
+          var w = new XMLHttpRequest();
+          w.open("GET", "https://api.open-meteo.com/v1/forecast?latitude=" + d.latitude +
+            "&longitude=" + d.longitude + "&current_weather=true", true);
+          w.timeout = 8000;
+          w.onreadystatechange = function () {
+            if (w.readyState !== 4 || w.status !== 200) return;
+            try {
+              var cw = JSON.parse(w.responseText).current_weather;
+              el.textContent = "🌍 " + Math.round(cw.temperature) + "°C  ·  " + (d.city || "Earth") + ", Earth";
+            } catch (e) {}
+          };
+          w.send();
+        } catch (e) {}
       };
-      xhr.send();
+      g.send();
     }
-
-    // Mars forecast — Jezero Crater, live sol count. No network needed.
-    var marsEl = document.getElementById("weather-text");
-    if (marsEl) {
-      var landed = Date.UTC(2021, 1, 18, 20, 55, 0);          // Perseverance touchdown
-      var sol = Math.floor((Date.now() - landed) / 88775000); // 1 sol = 88775 s
-      var CONDS = [
-        {i:"🔴", d:"Clear"}, {i:"🟠", d:"Hazy"},
-        {i:"🌫️", d:"Dusty"}, {i:"🌪️", d:"Dust devils"},
-        {i:"🟤", d:"Dust storm"}
-      ];
-      var c = CONDS[sol % CONDS.length];
-      var hi = -8 - (sol % 13);     // daytime high, roughly -8…-20 C
-      var lo = -70 - (sol % 20);    // night low, roughly -70…-89 C
-      marsEl.textContent = c.i + " " + hi + "°C / " + lo + "°C  " + c.d +
-        "  ·  Jezero Crater, Mars  ·  Sol " + sol;
-    }
+    var RENDER = { mars: mars, moon: moon, sun: sun, earth: earth };
+    function show() { (RENDER[MODES[idx]] || mars)(); }
+    el.addEventListener("click", function () {
+      idx = (idx + 1) % MODES.length;
+      try { localStorage.setItem("ocs_wx", MODES[idx]); } catch (e) {}
+      show();
+    });
+    show();
   })();
 
   var feedMoreWrap = document.getElementById("feed-more-wrap");
@@ -3669,6 +3697,136 @@ STATUS_HTML = """<!DOCTYPE html>
     if (moviesOpened) return;
     moviesOpened = true;
     loadMovies(false);
+  });
+
+  // ── TV Series tab (shows -> seasons -> episodes) ──
+  var seriesSearch  = document.getElementById("series-search");
+  var seriesStatus  = document.getElementById("series-status");
+  var seriesGrid    = document.getElementById("series-grid");
+  var seriesDetail  = document.getElementById("series-detail");
+  var seriesRefresh = document.getElementById("series-refresh");
+  var seriesSync = createButtonGroup("series-sync-btns", [
+    { value: "0", label: "0s" }, { value: "1000", label: "1s" },
+    { value: "1500", label: "1.5s" }, { value: "2000", label: "2s" },
+    { value: "2500", label: "2.5s" }, { value: "3000", label: "3s" }
+  ], "{{local_media_video_delay_ms}}");
+  var seriesData = [];
+
+  function renderShows(list) {
+    seriesDetail.style.display = "none";
+    seriesGrid.style.display = "grid";
+    seriesGrid.innerHTML = "";
+    if (!list.length) {
+      var e = document.createElement("p"); e.className = "empty";
+      e.textContent = "No shows found."; seriesGrid.appendChild(e); return;
+    }
+    function showArt(sh) {
+      var d = document.createElement("div");
+      d.style.cssText = "width:100%;aspect-ratio:2/3;border-radius:8px;border:1px solid var(--border);background:linear-gradient(160deg,#2a2d36,#15161b);display:flex;flex-direction:column;justify-content:center;align-items:center;gap:9px;padding:12px;text-align:center;";
+      d.innerHTML = '<svg viewBox="0 0 24 24" style="width:30px;height:30px;stroke:var(--red);fill:none;stroke-width:1.6;stroke-linejoin:round;"><rect x="3" y="7" width="14" height="13" rx="2"/><path d="M8 7V4h10a2 2 0 012 2v11a2 2 0 01-2 2h-1"/></svg>' +
+        '<span style="font-size:.82rem;color:var(--text);font-weight:600;line-height:1.2;">' + escHtml(sh.title) + '</span>' +
+        '<span style="font-size:.68rem;color:var(--muted);">' + sh.seasons.length + ' season' + (sh.seasons.length !== 1 ? 's' : '') + '</span>';
+      return d;
+    }
+    list.forEach(function (sh) {
+      var card = document.createElement("div");
+      card.style.cssText = "cursor:pointer;display:flex;flex-direction:column;gap:6px;";
+      var art;
+      if (sh.poster) {
+        art = document.createElement("img");
+        art.loading = "lazy"; art.src = "/poster?path=" + encodeURIComponent(sh.poster); art.alt = sh.title;
+        art.style.cssText = "width:100%;aspect-ratio:2/3;object-fit:cover;border-radius:8px;background:#222;border:1px solid var(--border);";
+        art.onerror = function () { var f = showArt(sh); art.replaceWith(f); };
+      } else {
+        art = showArt(sh);
+      }
+      var t = document.createElement("div");
+      t.textContent = sh.title + (sh.year ? " (" + sh.year + ")" : "");
+      t.style.cssText = "font-size:.78rem;color:var(--text);line-height:1.2;";
+      card.appendChild(art); card.appendChild(t);
+      card.addEventListener("click", function () { openShow(sh); });
+      seriesGrid.appendChild(card);
+    });
+  }
+
+  function openShow(sh) {
+    seriesGrid.style.display = "none";
+    seriesDetail.style.display = "block";
+    seriesDetail.innerHTML = "";
+    var back = document.createElement("button");
+    back.textContent = "← All shows";
+    back.style.cssText = "background:transparent;color:var(--text);border:1px solid var(--border);border-radius:8px;padding:7px 14px;cursor:pointer;font-family:inherit;font-size:.82rem;";
+    back.addEventListener("click", function () { seriesDetail.style.display = "none"; seriesGrid.style.display = "grid"; });
+    seriesDetail.appendChild(back);
+    var h = document.createElement("div");
+    h.textContent = sh.title + (sh.year ? " (" + sh.year + ")" : "");
+    h.style.cssText = "font-size:1.3rem;font-weight:600;color:var(--text);margin:12px 0;";
+    seriesDetail.appendChild(h);
+    var seasonBar = document.createElement("div");
+    seasonBar.style.cssText = "display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px;";
+    var epWrap = document.createElement("div");
+    function showSeason(si) {
+      epWrap.innerHTML = "";
+      Array.prototype.forEach.call(seasonBar.children, function (b, i) {
+        b.style.background = i === si ? "var(--red)" : "transparent";
+        b.style.color = i === si ? "#fff" : "var(--text)";
+      });
+      sh.seasons[si].episodes.forEach(function (ep) {
+        var row = document.createElement("div");
+        row.className = "stream-row"; row.style.cursor = "pointer";
+        row.innerHTML = '<span style="font-size:.92rem;">' + escHtml(ep.title) + '</span>' +
+          '<span style="font-family:monospace;font-size:.75rem;color:var(--muted);">PLAY</span>';
+        row.addEventListener("click", function () {
+          window.location.href = "/local_watch?file=" + encodeURIComponent(ep.file) +
+            "&sync=" + encodeURIComponent(seriesSync.value);
+        });
+        epWrap.appendChild(row);
+      });
+    }
+    sh.seasons.forEach(function (s, i) {
+      var b = document.createElement("button");
+      b.textContent = s.name;
+      b.style.cssText = "padding:7px 14px;border-radius:8px;border:1px solid var(--border);background:transparent;color:var(--text);cursor:pointer;font-family:inherit;font-size:.8rem;";
+      b.addEventListener("click", function () { showSeason(i); });
+      seasonBar.appendChild(b);
+    });
+    seriesDetail.appendChild(seasonBar);
+    seriesDetail.appendChild(epWrap);
+    showSeason(0);
+  }
+
+  function filterSeries() {
+    var q = (seriesSearch.value || "").toLowerCase().trim();
+    renderShows(!q ? seriesData : seriesData.filter(function (s) {
+      return s.title.toLowerCase().indexOf(q) !== -1;
+    }));
+  }
+  seriesSearch.addEventListener("input", filterSeries);
+
+  function loadSeries(force) {
+    seriesStatus.textContent = "Loading shows…";
+    seriesGrid.innerHTML = ""; seriesDetail.style.display = "none"; seriesGrid.style.display = "grid";
+    var xhr = new XMLHttpRequest();
+    xhr.open("GET", "/series" + (force ? "?refresh=1" : ""), true);
+    xhr.timeout = 90000;
+    xhr.onreadystatechange = function () {
+      if (xhr.readyState !== 4) return;
+      var data; try { data = JSON.parse(xhr.responseText); } catch (e) {
+        seriesStatus.textContent = "Failed to load shows."; return;
+      }
+      seriesData = data.series || [];
+      seriesStatus.textContent = seriesData.length + " show" + (seriesData.length !== 1 ? "s" : "");
+      filterSeries();
+    };
+    xhr.ontimeout = function () { seriesStatus.textContent = "Timed out scanning shows — hit REFRESH."; };
+    xhr.send();
+  }
+  seriesRefresh.addEventListener("click", function () { loadSeries(true); });
+  var seriesOpened = false;
+  document.querySelector('[data-tab="series"]').addEventListener("click", function () {
+    if (seriesOpened) return;
+    seriesOpened = true;
+    loadSeries(false);
   });
   } catch(e) { /* init error — non-fatal */ }
 })();
@@ -4433,12 +4591,57 @@ def render_mp4_page(direct_url: str, error_msg: str = "", stream_title: str = ""
             .replace("{{error_msg}}", error_msg))
 
 
-# ── Movie library (poster-grid tab) ─────────────────────────────────────────
+# ── Movie / series library (poster-grid tabs) ───────────────────────────────
 _MOVIE_POSTERS = ("poster.jpg", "poster.png", "folder.jpg", "cover.jpg")
 _MOVIE_EXTRA_DIRS = {"trailers", "featurettes", "behind the scenes", "extras",
                      "other", "sample", "specials", "deleted scenes", "shorts"}
+_SERIES_DIRS = {"series", "tv", "shows", "tv shows", "tvshows"}
+_SEASON_RE = re.compile(r"^(season\s*\d+|specials)$", re.I)
+_CACHE_DIR = os.path.dirname(PROGRESS_FILE) or "/config"
 _movies_cache: dict = {"ts": 0.0, "data": None}
+_series_cache: dict = {"ts": 0.0, "data": None}
 _movies_lock = threading.Lock()
+_series_lock = threading.Lock()
+
+
+def _season_num(d: str) -> int:
+    m = re.search(r"\d+", d)
+    return int(m.group()) if m else 0
+
+
+def _load_index_cache(fn: str):
+    try:
+        with open(os.path.join(_CACHE_DIR, fn), "r", encoding="utf-8") as f:
+            d = json.load(f)
+        return d.get("data")
+    except Exception:
+        return None
+
+
+def _save_index_cache(fn: str, data) -> None:
+    try:
+        with open(os.path.join(_CACHE_DIR, fn), "w", encoding="utf-8") as f:
+            json.dump({"ts": time.time(), "data": data}, f)
+    except Exception:
+        pass
+
+
+def _cached_index(cache, lock, fn, scanner, force):
+    """In-memory + on-disk cache. Disk cache makes loads instant across restarts;
+    only a forced refresh (or a missing cache) triggers the slow NFS scan."""
+    with lock:
+        if not force and cache["data"] is not None:
+            return cache["data"]
+        if not force:
+            disk = _load_index_cache(fn)
+            if disk is not None:
+                cache["data"] = disk
+                return disk
+        data = scanner()
+        cache["data"] = data
+        cache["ts"] = time.time()
+        _save_index_cache(fn, data)
+        return data
 
 
 def _parse_movie_name(folder: str) -> tuple[str, str]:
@@ -4480,7 +4683,8 @@ def _scan_movies() -> list[dict]:
     base = os.path.abspath(LOCAL_MEDIA_DIR)
     movies = []
     for root, dirs, files in os.walk(base, followlinks=True):
-        dirs[:] = [d for d in dirs if d.lower() not in _MOVIE_EXTRA_DIRS]
+        dirs[:] = [d for d in dirs
+                   if d.lower() not in _MOVIE_EXTRA_DIRS and d.lower() not in _SERIES_DIRS]
         lower = {f.lower(): f for f in files}
         poster = next((lower[p] for p in _MOVIE_POSTERS if p in lower), None)
         if not poster:
@@ -4514,16 +4718,52 @@ def _scan_movies() -> list[dict]:
 
 
 def _get_movies(force: bool = False) -> list[dict]:
-    """Cached movie list (NFS scan of 100s of folders is slow; refresh forces a rescan)."""
-    with _movies_lock:
-        now = time.time()
-        cached = _movies_cache["data"]
-        if not force and cached is not None and now - _movies_cache["ts"] < 600:
-            return cached
-        data = _scan_movies()
-        _movies_cache["data"] = data
-        _movies_cache["ts"] = now
-        return data
+    return _cached_index(_movies_cache, _movies_lock, "movies_index.json", _scan_movies, force)
+
+
+def _scan_series() -> list[dict]:
+    """TV shows under LOCAL_MEDIA_DIR: a folder containing 'Season N'/'Specials'
+    subfolders. Groups show -> seasons -> episodes."""
+    base = os.path.abspath(LOCAL_MEDIA_DIR)
+    shows = []
+    for root, dirs, files in os.walk(base, followlinks=True):
+        season_dirs = [d for d in dirs if _SEASON_RE.match(d.strip())]
+        if not season_dirs:
+            continue
+        dirs[:] = []  # this is a show folder; seasons handled here, don't descend
+        lower = {f.lower(): f for f in files}
+        poster = next((lower[p] for p in _MOVIE_POSTERS if p in lower), None)
+        rel_show = os.path.relpath(root, base)
+        title, year = _parse_movie_name(os.path.basename(root))
+        nt, ny, genres = _read_nfo_meta(root, files)  # tvshow.nfo if present
+        title, year = nt or title, ny or year
+        seasons = []
+        for sd in sorted(season_dirs, key=_season_num):
+            try:
+                sfiles = sorted(os.listdir(os.path.join(root, sd)))
+            except OSError:
+                continue
+            eps = [{"title": os.path.splitext(e)[0], "file": os.path.join(rel_show, sd, e)}
+                   for e in sfiles if os.path.splitext(e)[1].lower() in LOCAL_MEDIA_EXTS]
+            if eps:
+                seasons.append({"name": sd, "episodes": eps})
+        if not seasons:
+            continue
+        try:
+            added = int(os.path.getmtime(root))
+        except OSError:
+            added = 0
+        shows.append({
+            "title": title, "year": year,
+            "poster": os.path.join(rel_show, poster) if poster else "",
+            "genres": genres, "added": added, "seasons": seasons,
+        })
+    shows.sort(key=lambda s: (s["title"].lower(), s["year"]))
+    return shows
+
+
+def _get_series(force: bool = False) -> list[dict]:
+    return _cached_index(_series_cache, _series_lock, "series_index.json", _scan_series, force)
 
 
 # ── HTTP handler ──────────────────────────────────────────────────────────────
@@ -4690,6 +4930,10 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/movies":
             force = qs.get("refresh", ["0"])[0] == "1"
             self._json({"movies": _get_movies(force=force)})
+
+        elif path == "/series":
+            force = qs.get("refresh", ["0"])[0] == "1"
+            self._json({"series": _get_series(force=force)})
 
         elif path == "/poster":
             rel = unquote(qs.get("path", [None])[0] or "")
