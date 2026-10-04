@@ -16,6 +16,7 @@ import os
 import signal
 import json
 import logging
+import socket
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -57,6 +58,10 @@ FFMPEG_QUALITY= int(os.environ.get("FFMPEG_QUALITY", "3"))   # 1=best, 31=worst
 STREAM_WIDTH  = int(os.environ.get("STREAM_WIDTH", "1920"))
 STREAM_HEIGHT = int(os.environ.get("STREAM_HEIGHT", "1080"))
 MAX_STREAMS   = int(os.environ.get("MAX_STREAMS", "3"))       # concurrent stream slots
+# HW-accelerated DECODE (encode stays MJPEG on CPU). "vaapi" | "qsv" | "off".
+# Decode is the heavy part for 1080p HEVC/H264; offloading it to the iGPU frees CPU.
+HW_DECODE       = os.environ.get("HW_DECODE", "off").lower()
+HWACCEL_DEVICE  = os.environ.get("HWACCEL_DEVICE", "/dev/dri/renderD128")
 AUDIO_DELAY_MS= int(os.environ.get("AUDIO_DELAY_MS", "0"))   # ms to delay video start after audio, to keep streams in sync
 LOCAL_MEDIA_VIDEO_DELAY_MS = int(
     os.environ.get("LOCAL_MEDIA_VIDEO_DELAY_MS", "1500")
@@ -1012,6 +1017,24 @@ def _probe_local_codecs(abs_path: str) -> tuple[str, str]:
         return "", ""
 
 
+def _hwaccel_args() -> list[str]:
+    """HW-accelerated DECODE flags, inserted before -i.
+
+    Uses generic ``-hwaccel`` (no ``-hwaccel_output_format``), so ffmpeg decodes
+    on the GPU then auto-downloads frames to system memory — the existing software
+    scale + mjpeg encode path is untouched, and unsupported codecs fall back to
+    software decode automatically. Encode stays MJPEG on CPU (NVENC/most iGPUs
+    don't do MJPEG; the iGPU's JPEG encoder is a later, more fragile step).
+    """
+    if HW_DECODE == "vaapi":
+        return ["-hwaccel", "vaapi", "-hwaccel_device", HWACCEL_DEVICE]
+    if HW_DECODE == "qsv":
+        return ["-hwaccel", "qsv"]
+    if HW_DECODE in ("cuda", "nvdec"):
+        return ["-hwaccel", "cuda"]   # NVIDIA NVDEC (needs nvidia runtime + video capability)
+    return []
+
+
 def _direct_input_args(url: str) -> list[str]:
     """ffmpeg input flags for a direct stream URL."""
     from urllib.parse import urlparse, parse_qs
@@ -1245,6 +1268,7 @@ def _start_muxed_pipeline(stream: Stream):
     ff_cmd = [
         "ffmpeg",
         "-loglevel", "error",
+        *_hwaccel_args(),
         *_direct_input_args(stream.url),
         *seek_args,
         "-probesize", "20M",
@@ -1347,6 +1371,7 @@ def _run_hls_pipeline(stream: Stream):
             ff_cmd = [
                 "ffmpeg",
                 "-loglevel", "error",
+                *_hwaccel_args(),
                 *_direct_input_args(stream.url),
                 "-i", _ffmpeg_input_target(stream.url),
                 "-vf", (
@@ -1373,7 +1398,10 @@ def _run_hls_pipeline(stream: Stream):
 
         buf = b""
         while True:
-            chunk = ff_proc.stdout.read(65536)
+            # read1(): return as soon as data is available instead of blocking
+            # until a full 64 KB accumulates — otherwise frames arrive in ~4-frame
+            # bursts and the serve loop drops all but the latest => ~4 fps + stutter.
+            chunk = ff_proc.stdout.read1(65536)
             if not chunk:
                 break
             buf += chunk
@@ -1499,6 +1527,7 @@ def run_pipeline(stream: Stream):
                 ff_cmd = [
                     "ffmpeg",
                     "-loglevel", "error",
+                    *_hwaccel_args(),
                     "-reconnect", "1",
                     "-reconnect_streamed", "1",
                     "-reconnect_delay_max", "10",
@@ -1538,6 +1567,7 @@ def run_pipeline(stream: Stream):
                 ff_cmd = [
                     "ffmpeg",
                     "-loglevel", "error",
+                    *_hwaccel_args(),
                     "-re",
                     "-i", "pipe:0",
                     "-vf", (
@@ -1585,7 +1615,7 @@ def run_pipeline(stream: Stream):
             frame_before = stream.frame
             buf = b""
             while True:
-                chunk = ff_proc.stdout.read(65536)
+                chunk = ff_proc.stdout.read1(65536)  # see read1() note in _run_hls_pipeline
                 if not chunk:
                     break
                 buf += chunk
@@ -1657,11 +1687,14 @@ STATUS_HTML = """<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>OpenCarStream — Streaming for Tesla vehicles</title>
+<title>Stella Stream</title>
+<script>try{var _t=localStorage.getItem("ocs_theme");if(_t)document.documentElement.setAttribute("data-theme",_t);}catch(e){}</script>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@700;900&family=Rajdhani:wght@300;500&display=swap');
   :root{--red:#e31937;--dark:#090909;--panel:#111117;--border:#252530;--text:#e0e0ee;--muted:#555568;--input-bg:#0d0d14;--thumb-bg:#1a1a24;}
-  @media(prefers-color-scheme:light){:root{--dark:#f4f4f6;--panel:#ffffff;--border:#d8d8e0;--text:#1a1a2e;--muted:#888899;--input-bg:#eaeaf0;--thumb-bg:#dcdce8;}}
+  @media(prefers-color-scheme:light){:root:not([data-theme="dark"]){--dark:#f4f4f6;--panel:#ffffff;--border:#d8d8e0;--text:#1a1a2e;--muted:#888899;--input-bg:#eaeaf0;--thumb-bg:#dcdce8;}}
+  :root[data-theme="light"]{--dark:#f4f4f6;--panel:#ffffff;--border:#d8d8e0;--text:#1a1a2e;--muted:#888899;--input-bg:#eaeaf0;--thumb-bg:#dcdce8;}
+  :root[data-theme="dark"]{--red:#e31937;--dark:#090909;--panel:#111117;--border:#252530;--text:#e0e0ee;--muted:#555568;--input-bg:#0d0d14;--thumb-bg:#1a1a24;}
   *{margin:0;padding:0;box-sizing:border-box;}
   body{background:var(--dark);color:var(--text);font-family:'Rajdhani',sans-serif;font-size:21px;min-height:100vh;display:flex;flex-direction:column;align-items:center;padding:24px 32px;}
   h1{font-family:'Orbitron',monospace;font-weight:900;font-size:2.4rem;color:var(--red);letter-spacing:.12em;text-shadow:0 0 24px rgba(227,25,55,.45);margin-bottom:6px;}
@@ -1704,26 +1737,65 @@ STATUS_HTML = """<!DOCTYPE html>
   /* shared input style for start-stream row */
   #yt-id{flex:1;min-width:300px;background:var(--input-bg);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:12px 16px;font-family:monospace;font-size:1rem;}
   select{background:var(--input-bg);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:12px 16px;font-family:monospace;font-size:1rem;}
-  footer{margin-top:30px;color:var(--muted);font-size:.82rem;letter-spacing:.04em;text-align:center;max-width:1600px;line-height:1.6;}
+  footer{margin-top:14px;color:var(--muted);font-size:.82rem;letter-spacing:.04em;text-align:center;max-width:1600px;line-height:1.5;}
+
+  /* ── Stella Stream · Tesla-OS shell ── */
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+  body{font-family:'Inter',system-ui,-apple-system,sans-serif;font-size:17px;padding:60px 20px 104px;}
+  .statusbar{position:fixed;top:0;left:0;right:0;z-index:50;display:flex;align-items:center;justify-content:space-between;
+    padding:13px 26px;background:color-mix(in srgb,var(--dark) 82%,transparent);backdrop-filter:blur(16px);
+    border-bottom:1px solid var(--border);}
+  .brand{display:flex;align-items:baseline;gap:10px;}
+  .brand .mark{font-weight:800;font-size:1.18rem;letter-spacing:.42em;color:var(--text);}
+  .brand .sub2{font-weight:500;font-size:.8rem;letter-spacing:.3em;color:var(--muted);}
+  .brand .star{color:var(--red);font-size:1rem;align-self:center;}
+  .statusline{display:flex;align-items:center;gap:18px;}
+  .statusline .clock{font-weight:600;font-size:1.06rem;color:var(--text);font-variant-numeric:tabular-nums;letter-spacing:.03em;}
+  .statusline .net{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:.84rem;}
+  .statusline .dot{width:9px;height:9px;border-radius:50%;background:#30d158;box-shadow:0 0 9px rgba(48,209,88,.7);}
+  /* home launcher */
+  #tab-home h2.home-h{font-weight:600;font-size:1.2rem;color:var(--text);margin:2px 2px 12px;letter-spacing:-.01em;}
+  .app-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px;}
+  .app-tile{display:flex;flex-direction:column;gap:7px;min-height:102px;padding:15px 16px;border-radius:18px;cursor:pointer;
+    background:var(--panel);border:1px solid var(--border);transition:transform .14s ease,border-color .14s ease,background .14s ease;}
+  .app-tile:hover,.app-tile:focus-visible{transform:translateY(-3px);border-color:var(--red);background:var(--thumb-bg);outline:none;}
+  .app-tile .ico{color:var(--text);}
+  .app-tile .ico svg{width:29px;height:29px;}
+  .app-tile .t-label{font-size:1.02rem;font-weight:600;color:var(--text);margin-top:auto;}
+  .app-tile .t-desc{font-size:.8rem;color:var(--muted);}
+  /* dock */
+  .dock{position:fixed;left:50%;transform:translateX(-50%);bottom:16px;z-index:60;display:flex;gap:3px;padding:8px;
+    border-radius:24px;background:color-mix(in srgb,var(--panel) 92%,transparent);backdrop-filter:blur(18px);
+    border:1px solid var(--border);box-shadow:0 14px 48px rgba(0,0,0,.55);max-width:calc(100vw - 20px);overflow-x:auto;}
+  .dock::-webkit-scrollbar{display:none;}
+  .dock-btn{flex:0 0 auto;display:flex;flex-direction:column;align-items:center;gap:4px;width:64px;padding:9px 4px;border:0;
+    border-radius:17px;background:transparent;color:var(--muted);cursor:pointer;font-family:inherit;font-size:.62rem;
+    font-weight:500;letter-spacing:.01em;transition:color .13s,background .13s;}
+  .dock-btn svg{width:23px;height:23px;}
+  .dock-btn:hover{color:var(--text);background:var(--thumb-bg);}
+  .dock-btn.active{color:#fff;background:var(--red);}
+  .app-tile svg,.dock-btn svg{stroke:currentColor;fill:none;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;}
+  .card{border-radius:20px;}
+  @media(max-width:560px){.statusbar .sub2{display:none;} body{padding:66px 14px 120px;} .app-grid{grid-template-columns:repeat(auto-fill,minmax(150px,1fr));}}
 </style>
 </head>
 <body>
-<h1>OPENCARSTREAM</h1>
-<p class="sub">A third-party streaming launcher for Tesla’s in-car browser</p>
+<div class="statusbar">
+  <div class="brand"><span class="star">&#9650;</span><span class="mark">STELLA</span><span class="sub2">stream</span></div>
+  <div class="statusline">
+    <span class="clock" id="clock">--:--</span>
+    <span class="net"><span class="dot"></span>online</span>
+  </div>
+</div>
 
-<div class="tabs">
-  <button class="tab-btn active" data-tab="stream">Stream</button>
-  <button class="tab-btn" data-tab="feed">YouTube</button>
-  <button class="tab-btn" data-tab="twitch">Twitch</button>
-  <button class="tab-btn" data-tab="pluto">Pluto TV</button>
-  <button class="tab-btn" data-tab="iptv">IPTV</button>
-  <button class="tab-btn" data-tab="ace">Acestream</button>
-  <button class="tab-btn" data-tab="local">Local Media</button>
-  <button class="tab-btn" data-tab="info">Info</button>
+<!-- ── Home launcher ── -->
+<div class="tab-panel active" id="tab-home">
+  <h2 class="home-h">Good drive, Bart</h2>
+  <div class="app-grid" id="app-grid"></div>
 </div>
 
 <!-- ── Stream tab ── -->
-<div class="tab-panel active" id="tab-stream">
+<div class="tab-panel" id="tab-stream">
   <div class="card">
     <h2>Start stream</h2>
     <p style="font-size:.85rem;color:var(--muted);margin-bottom:12px;">
@@ -1807,6 +1879,7 @@ STATUS_HTML = """<!DOCTYPE html>
       <input id="yt-search-input" type="text" placeholder="Search query…">
       <button id="yt-search-go">SEARCH</button>
     </div>
+    <div id="yt-search-recent" style="display:flex;flex-wrap:wrap;gap:6px;margin-top:8px;"></div>
     <div class="feed-status" id="yt-search-status"></div>
     <div class="feed-grid" id="yt-search-grid"></div>
     <div style="text-align:center;margin-top:14px;display:none;" id="yt-search-more-wrap">
@@ -1981,6 +2054,36 @@ STATUS_HTML = """<!DOCTYPE html>
   </div>
 </div>
 
+<!-- ── Movies tab (poster grid) ── -->
+<div class="tab-panel" id="tab-movies">
+  <div class="card">
+    <h2>Movies</h2>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;">
+      <input id="movies-search" type="search" placeholder="Search movies…"
+             style="flex:1;min-width:150px;padding:9px 12px;border-radius:8px;border:1px solid var(--border);background:#15161b;color:var(--text);font-size:.9rem;">
+      <select id="movies-sort" style="padding:9px 10px;border-radius:8px;border:1px solid var(--border);background:#15161b;color:var(--text);font-size:.85rem;">
+        <option value="recent">Recently added</option>
+        <option value="title">Title A–Z</option>
+        <option value="title_desc">Title Z–A</option>
+        <option value="year_desc">Year (newest)</option>
+        <option value="year_asc">Year (oldest)</option>
+      </select>
+      <select id="movies-genre" style="padding:9px 10px;border-radius:8px;border:1px solid var(--border);background:#15161b;color:var(--text);font-size:.85rem;">
+        <option value="">All genres</option>
+      </select>
+      <div id="movies-sync-btns" style="display:flex;gap:6px;flex-wrap:wrap;"></div>
+      <button id="movies-refresh"
+              style="background:var(--red);color:#fff;border:0;border-radius:6px;padding:8px 14px;font-family:'Orbitron',monospace;font-size:.7rem;letter-spacing:.08em;cursor:pointer;">
+        REFRESH
+      </button>
+    </div>
+    <div class="feed-status" id="movies-status" style="margin-top:10px;">Open this tab to load your library.</div>
+  </div>
+  <div class="card">
+    <div id="movies-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:14px;"></div>
+  </div>
+</div>
+
 <!-- ── Info tab ── -->
 <div class="tab-panel" id="tab-info">
   <div class="card">
@@ -2002,7 +2105,17 @@ STATUS_HTML = """<!DOCTYPE html>
   </div>
 </div>
 
-<footer>Tesla is a trademark of Tesla, Inc. OpenCarStream is unofficial and not affiliated with or endorsed by Tesla. YouTube is a trademark of Google LLC, Twitch is a trademark of Twitch Interactive, Inc., and X/Twitter is a trademark of X Corp.; OpenCarStream is not affiliated with or endorsed by any of them.</footer>
+<nav class="dock" id="dock"></nav>
+
+<footer>
+  <div style="display:flex;justify-content:center;gap:14px;margin-bottom:7px;color:var(--red);filter:drop-shadow(0 0 6px rgba(227,25,55,.45));">
+    <svg viewBox="0 0 24 24" style="width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round;" aria-label="rocket"><path d="M12 2c3 2.4 4.6 6 4.6 9.5L14 14h-4l-2.6-2.5C7.4 8 9 4.4 12 2z"/><circle cx="12" cy="9" r="1.5"/><path d="M8 15l-2.5 2.5M8 15c-2 .7-3 2.5-3 5 2.5 0 4.3-1 5-3M16 15l2.5 2.5M16 15c2 .7 3 2.5 3 5-2.5 0-4.3-1-5-3"/></svg>
+    <svg viewBox="0 0 24 24" style="width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round;" aria-label="world"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3 3 15 0 18M12 3c-3 3-3 15 0 18"/></svg>
+    <svg viewBox="0 0 24 24" style="width:20px;height:20px;fill:currentColor;stroke:none;" aria-label="spark"><path d="M12 2.5l1.9 6L20 10l-6.1 1.5L12 17.5l-1.9-6L4 10l6.1-1.5z"/></svg>
+  </div>
+  <div style="font-size:.92rem;color:var(--text);font-weight:600;letter-spacing:.02em;display:flex;align-items:center;justify-content:center;gap:7px;flex-wrap:wrap;">Made by the best intelligences.<svg viewBox="0 0 24 24" style="width:15px;height:15px;fill:none;stroke:var(--red);stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3 3 15 0 18M12 3c-3 3-3 15 0 18"/></svg><span style="color:var(--muted);font-weight:400;">Soon we leave this planet.</span></div>
+  <div style="font-size:.85rem;color:var(--muted);margin-top:6px;font-style:italic;line-height:1.45;">&ldquo;Failure is an option here. If things are not failing, you are not innovating enough.&rdquo; <span style="color:var(--red);font-style:normal;white-space:nowrap;">— Elon Musk</span></div>
+</footer>
 <p id="weather-text" style="margin-top:10px;color:var(--muted);font-size:.85rem;text-align:center;"></p>
 
 <script>
@@ -2018,19 +2131,86 @@ STATUS_HTML = """<!DOCTYPE html>
 </script>
 <script>
 (function () {
-  // ── Tab switching ──
-  var tabBtns = document.querySelectorAll(".tab-btn");
-  var tabPanels = document.querySelectorAll(".tab-panel");
-  Array.prototype.forEach.call(tabBtns, function (btn) {
-    btn.addEventListener("click", function () {
-      var target = btn.getAttribute("data-tab");
-      Array.prototype.forEach.call(tabBtns, function (b) { b.classList.remove("active"); });
-      Array.prototype.forEach.call(tabPanels, function (p) { p.classList.remove("active"); });
-      btn.classList.add("active");
-      var panel = document.getElementById("tab-" + target);
-      if (panel) panel.classList.add("active");
+  // ── Stella Stream shell: launcher tiles + bottom dock + clock ──
+  var ICONS = {
+    home:'<svg viewBox="0 0 24 24"><path d="M3 11l9-8 9 8"/><path d="M5 10v10h14V10"/></svg>',
+    movies:'<svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 4v16M17 4v16M3 9h4M3 15h4M17 9h4M17 15h4"/></svg>',
+    feed:'<svg viewBox="0 0 24 24"><rect x="2" y="5" width="20" height="14" rx="4"/><path d="M10 9l5 3-5 3z" fill="currentColor" stroke="none"/></svg>',
+    stream:'<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M10 9l5 3-5 3z" fill="currentColor" stroke="none"/></svg>',
+    pluto:'<svg viewBox="0 0 24 24"><rect x="3" y="7" width="18" height="12" rx="2"/><path d="M8 3l4 4 4-4"/></svg>',
+    twitch:'<svg viewBox="0 0 24 24"><path d="M5 3h15v11l-4 4h-4l-3 3H7v-3H4V6z"/><path d="M11 8v4M15 8v4"/></svg>',
+    iptv:'<svg viewBox="0 0 24 24"><path d="M8 6h13M8 12h13M8 18h13M3.5 6h.01M3.5 12h.01M3.5 18h.01"/></svg>',
+    ace:'<svg viewBox="0 0 24 24"><circle cx="6" cy="12" r="2.3"/><circle cx="18" cy="6" r="2.3"/><circle cx="18" cy="18" r="2.3"/><path d="M8 11l8-4M8 13l8 4"/></svg>',
+    local:'<svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z"/></svg>',
+    info:'<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v5"/><circle cx="12" cy="7.6" r=".7" fill="currentColor" stroke="none"/></svg>',
+    theme:'<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 000 18z" fill="currentColor" stroke="none"/></svg>'
+  };
+  var SECTIONS = [
+    {k:"movies", label:"Movies",      desc:"Your film library"},
+    {k:"feed",   label:"YouTube",     desc:"Search & channels"},
+    {k:"stream", label:"Stream",      desc:"Paste any link"},
+    {k:"pluto",  label:"Pluto TV",    desc:"Free live TV"},
+    {k:"twitch", label:"Twitch",      desc:"Live & VODs"},
+    {k:"iptv",   label:"IPTV",        desc:"Your playlists"},
+    {k:"ace",    label:"Acestream",   desc:"P2P streams"},
+    {k:"local",  label:"Local Media", desc:"Browse files"},
+    {k:"info",   label:"Info",        desc:"API & status"}
+  ];
+  var allPanels = document.querySelectorAll(".tab-panel");
+  function showSection(k) {
+    Array.prototype.forEach.call(allPanels, function (p) { p.classList.remove("active"); });
+    var panel = document.getElementById("tab-" + k);
+    if (panel) panel.classList.add("active");
+    Array.prototype.forEach.call(document.querySelectorAll(".dock-btn"), function (b) {
+      b.classList.toggle("active", b.getAttribute("data-tab") === k);
     });
+    window.scrollTo(0, 0);
+  }
+  var appGrid = document.getElementById("app-grid");
+  SECTIONS.forEach(function (s) {
+    var tile = document.createElement("div");
+    tile.className = "app-tile";
+    tile.setAttribute("tabindex", "0");
+    tile.innerHTML = '<span class="ico">' + (ICONS[s.k] || "") + '</span>' +
+                     '<span class="t-label">' + s.label + '</span>' +
+                     '<span class="t-desc">' + s.desc + '</span>';
+    tile.addEventListener("click", function () {
+      var b = document.querySelector('.dock-btn[data-tab="' + s.k + '"]');
+      if (b) { b.click(); } else { showSection(s.k); }
+    });
+    tile.addEventListener("keydown", function (e) {
+      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); tile.click(); }
+    });
+    appGrid.appendChild(tile);
   });
+  var dock = document.getElementById("dock");
+  function makeDockBtn(k, label, icon) {
+    var b = document.createElement("button");
+    b.className = "dock-btn";
+    if (k) b.setAttribute("data-tab", k);
+    b.innerHTML = (icon || "") + "<span>" + label + "</span>";
+    return b;
+  }
+  var homeBtn = makeDockBtn("home", "Home", ICONS.home);
+  homeBtn.addEventListener("click", function () { showSection("home"); });
+  dock.appendChild(homeBtn);
+  SECTIONS.forEach(function (s) {
+    var b = makeDockBtn(s.k, s.label, ICONS[s.k]);
+    b.addEventListener("click", function () { showSection(s.k); });
+    dock.appendChild(b);
+  });
+  var _themeDockBtn = makeDockBtn("", "Theme", ICONS.theme);
+  _themeDockBtn.id = "theme-toggle";
+  dock.appendChild(_themeDockBtn);
+  showSection("home");
+  (function clock() {
+    var el = document.getElementById("clock");
+    if (el) {
+      var d = new Date(), h = d.getHours(), m = d.getMinutes();
+      el.textContent = (h < 10 ? "0" + h : h) + ":" + (m < 10 ? "0" + m : m);
+    }
+    setTimeout(clock, 15000);
+  })();
 
   try {
   // ── Shared utilities ──
@@ -2085,7 +2265,7 @@ STATUS_HTML = """<!DOCTYPE html>
 
   // ── Mode button options (shared across tabs) ──
   var modeOptions = [
-    { value: "mjpeg",  label: "MJPEG (Tesla)" },
+    { value: "mjpeg",  label: "MJPEG (t)" },
     { value: "mp4",    label: "MP4 (native)" },
     { value: "audio",  label: "Audio only" }
   ];
@@ -2897,18 +3077,22 @@ STATUS_HTML = """<!DOCTYPE html>
       xhr.send();
     }
 
-    // Use IP geolocation — works over HTTP, no browser permission needed
-    var xhr = new XMLHttpRequest();
-    xhr.open("GET", "https://ipapi.co/json/", true);
-    xhr.timeout = 6000;
-    xhr.onreadystatechange = function() {
-      if (xhr.readyState !== 4 || xhr.status !== 200) return;
-      try {
-        var d = JSON.parse(xhr.responseText);
-        if (d.latitude && d.longitude) fetchWeather(d.latitude, d.longitude, d.city || "");
-      } catch(e) {}
-    };
-    xhr.send();
+    // Mars forecast — Jezero Crater, live sol count. No network needed.
+    var marsEl = document.getElementById("weather-text");
+    if (marsEl) {
+      var landed = Date.UTC(2021, 1, 18, 20, 55, 0);          // Perseverance touchdown
+      var sol = Math.floor((Date.now() - landed) / 88775000); // 1 sol = 88775 s
+      var CONDS = [
+        {i:"🔴", d:"Clear"}, {i:"🟠", d:"Hazy"},
+        {i:"🌫️", d:"Dusty"}, {i:"🌪️", d:"Dust devils"},
+        {i:"🟤", d:"Dust storm"}
+      ];
+      var c = CONDS[sol % CONDS.length];
+      var hi = -8 - (sol % 13);     // daytime high, roughly -8…-20 C
+      var lo = -70 - (sol % 20);    // night low, roughly -70…-89 C
+      marsEl.textContent = c.i + " " + hi + "°C / " + lo + "°C  " + c.d +
+        "  ·  Jezero Crater, Mars  ·  Sol " + sol;
+    }
   })();
 
   var feedMoreWrap = document.getElementById("feed-more-wrap");
@@ -2945,6 +3129,7 @@ STATUS_HTML = """<!DOCTYPE html>
     var q = (ytSearchInput.value || "").trim();
     if (!q) { ytSearchInput.focus(); return; }
     if (!append) {
+      saveYtSearch(q);
       ytSearchLimit = 12;
       ytSearchGrid.innerHTML = "";
       ytSearchMoreWrap.style.display = "none";
@@ -2993,6 +3178,65 @@ STATUS_HTML = """<!DOCTYPE html>
     ytSearchLimit += 12;
     runYtSearch(true);
   });
+
+  // ── Recent YouTube searches (persisted per browser) ──
+  var ytRecentWrap = document.getElementById("yt-search-recent");
+  function getYtHistory() {
+    try { return JSON.parse(localStorage.getItem("ocs_yt_history") || "[]"); }
+    catch (e) { return []; }
+  }
+  function saveYtSearch(q) {
+    try {
+      var h = getYtHistory().filter(function (x) { return x.toLowerCase() !== q.toLowerCase(); });
+      h.unshift(q);
+      localStorage.setItem("ocs_yt_history", JSON.stringify(h.slice(0, 8)));
+    } catch (e) {}
+    renderYtRecent();
+  }
+  function renderYtRecent() {
+    var h = getYtHistory();
+    ytRecentWrap.innerHTML = "";
+    if (!h.length) return;
+    var lbl = document.createElement("span");
+    lbl.textContent = "Recent:";
+    lbl.style.cssText = "font-size:.75rem;color:var(--muted);align-self:center;";
+    ytRecentWrap.appendChild(lbl);
+    h.forEach(function (q) {
+      var chip = document.createElement("button");
+      chip.textContent = q;
+      chip.style.cssText = "background:var(--input-bg);color:var(--text);border:1px solid var(--border);border-radius:14px;padding:4px 12px;font-size:.78rem;cursor:pointer;";
+      chip.addEventListener("click", function () { ytSearchInput.value = q; runYtSearch(false); });
+      ytRecentWrap.appendChild(chip);
+    });
+    var clear = document.createElement("button");
+    clear.textContent = "clear";
+    clear.style.cssText = "background:transparent;color:var(--muted);border:0;font-size:.72rem;cursor:pointer;text-decoration:underline;align-self:center;";
+    clear.addEventListener("click", function () {
+      try { localStorage.removeItem("ocs_yt_history"); } catch (e) {}
+      renderYtRecent();
+    });
+    ytRecentWrap.appendChild(clear);
+  }
+  renderYtRecent();
+
+  // ── Light / dark theme toggle (persisted per browser) ──
+  var themeToggle = document.getElementById("theme-toggle");
+  function currentTheme() {
+    var set = document.documentElement.getAttribute("data-theme");
+    if (set) return set;
+    return (window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches) ? "light" : "dark";
+  }
+  function applyThemeLabel() {
+    var lbl = themeToggle.querySelector("span");
+    if (lbl) lbl.textContent = currentTheme() === "dark" ? "Light" : "Dark";
+  }
+  themeToggle.addEventListener("click", function () {
+    var next = currentTheme() === "dark" ? "light" : "dark";
+    document.documentElement.setAttribute("data-theme", next);
+    try { localStorage.setItem("ocs_theme", next); } catch (e) {}
+    applyThemeLabel();
+  });
+  applyThemeLabel();
   var feedLimit    = 12;
 
   function appendFeedCards(videos) {
@@ -3321,6 +3565,111 @@ STATUS_HTML = """<!DOCTYPE html>
     localOpened = true;
     loadLocalDir("");
   });
+
+  // ── Movies tab (poster grid + search) ──
+  var moviesSearch  = document.getElementById("movies-search");
+  var moviesStatus  = document.getElementById("movies-status");
+  var moviesGrid    = document.getElementById("movies-grid");
+  var moviesRefresh = document.getElementById("movies-refresh");
+  var moviesSync = createButtonGroup("movies-sync-btns", [
+    { value: "0", label: "0s" }, { value: "1000", label: "1s" },
+    { value: "1500", label: "1.5s" }, { value: "2000", label: "2s" },
+    { value: "2500", label: "2.5s" }, { value: "3000", label: "3s" }
+  ], "{{local_media_video_delay_ms}}");
+  var moviesData = [];
+
+  function renderMovies(list) {
+    moviesGrid.innerHTML = "";
+    if (!list.length) {
+      var e = document.createElement("p"); e.className = "empty";
+      e.textContent = "No movies found."; moviesGrid.appendChild(e); return;
+    }
+    list.forEach(function (m) {
+      var card = document.createElement("div");
+      card.style.cssText = "cursor:pointer;display:flex;flex-direction:column;gap:6px;";
+      var img = document.createElement("img");
+      img.loading = "lazy";
+      img.src = "/poster?path=" + encodeURIComponent(m.poster);
+      img.alt = m.title;
+      img.style.cssText = "width:100%;aspect-ratio:2/3;object-fit:cover;border-radius:8px;background:#222;border:1px solid var(--border);";
+      img.onerror = function () { img.style.visibility = "hidden"; };
+      var t = document.createElement("div");
+      t.textContent = m.title + (m.year ? " (" + m.year + ")" : "");
+      t.style.cssText = "font-size:.78rem;color:var(--text);line-height:1.2;";
+      card.appendChild(img); card.appendChild(t);
+      card.addEventListener("click", function () {
+        window.location.href = "/local_watch?file=" + encodeURIComponent(m.file) +
+          "&sync=" + encodeURIComponent(moviesSync.value);
+      });
+      moviesGrid.appendChild(card);
+    });
+  }
+
+  var moviesSort  = document.getElementById("movies-sort");
+  var moviesGenre = document.getElementById("movies-genre");
+
+  function populateGenres() {
+    var set = {};
+    moviesData.forEach(function (m) { (m.genres || []).forEach(function (g) { set[g] = 1; }); });
+    var cur = moviesGenre.value;
+    moviesGenre.innerHTML = '<option value="">All genres</option>';
+    Object.keys(set).sort().forEach(function (g) {
+      var o = document.createElement("option"); o.value = g; o.textContent = g;
+      moviesGenre.appendChild(o);
+    });
+    moviesGenre.value = cur || "";
+  }
+
+  function sortMovies(list) {
+    var s = moviesSort.value, a = list.slice();
+    if (s === "recent") a.sort(function (x, y) { return (y.added || 0) - (x.added || 0); });
+    else if (s === "title") a.sort(function (x, y) { return x.title.toLowerCase().localeCompare(y.title.toLowerCase()); });
+    else if (s === "title_desc") a.sort(function (x, y) { return y.title.toLowerCase().localeCompare(x.title.toLowerCase()); });
+    else if (s === "year_desc") a.sort(function (x, y) { return (parseInt(y.year, 10) || 0) - (parseInt(x.year, 10) || 0); });
+    else if (s === "year_asc") a.sort(function (x, y) { return (parseInt(x.year, 10) || 0) - (parseInt(y.year, 10) || 0); });
+    return a;
+  }
+
+  function filterMovies() {
+    var q = (moviesSearch.value || "").toLowerCase().trim();
+    var g = moviesGenre.value;
+    var list = moviesData.filter(function (m) {
+      if (q && m.title.toLowerCase().indexOf(q) === -1) return false;
+      if (g && (m.genres || []).indexOf(g) === -1) return false;
+      return true;
+    });
+    renderMovies(sortMovies(list));
+  }
+  moviesSearch.addEventListener("input", filterMovies);
+  moviesSort.addEventListener("change", filterMovies);
+  moviesGenre.addEventListener("change", filterMovies);
+
+  function loadMovies(force) {
+    moviesStatus.textContent = "Loading library…";
+    moviesGrid.innerHTML = "";
+    var xhr = new XMLHttpRequest();
+    xhr.open("GET", "/movies" + (force ? "?refresh=1" : ""), true);
+    xhr.timeout = 90000;
+    xhr.onreadystatechange = function () {
+      if (xhr.readyState !== 4) return;
+      var data; try { data = JSON.parse(xhr.responseText); } catch (e) {
+        moviesStatus.textContent = "Failed to load library."; return;
+      }
+      moviesData = data.movies || [];
+      moviesStatus.textContent = moviesData.length + " movie" + (moviesData.length !== 1 ? "s" : "");
+      populateGenres();
+      filterMovies();
+    };
+    xhr.ontimeout = function () { moviesStatus.textContent = "Timed out scanning library — hit REFRESH."; };
+    xhr.send();
+  }
+  moviesRefresh.addEventListener("click", function () { loadMovies(true); });
+  var moviesOpened = false;
+  document.querySelector('[data-tab="movies"]').addEventListener("click", function () {
+    if (moviesOpened) return;
+    moviesOpened = true;
+    loadMovies(false);
+  });
   } catch(e) { /* init error — non-fatal */ }
 })();
 </script>
@@ -3518,29 +3867,77 @@ WATCH_HTML = """<!DOCTYPE html>
     diag.textContent = message;
   }
 
+  // Auto-resync. Video is shown syncMs behind live (server jitter buffer), so
+  // audio.currentTime should sit at (age_s - syncMs). A flaky cellular link
+  // knocks A/V apart on reconnects and audio stalls; snap audio back to the
+  // server's current video position instead of making the user hand-nudge.
+  function doResync() {
+    if (!isFinite(audio.duration)) return;   // live stream: can't seek audio
+    var sx = new XMLHttpRequest();
+    sx.open("GET", "/stream_status?sid=" + encodeURIComponent(sid), true);
+    sx.onreadystatechange = function () {
+      if (sx.readyState !== 4 || sx.status < 200 || sx.status >= 300) return;
+      try {
+        var d = JSON.parse(sx.responseText);
+        if (typeof d.age_s !== "number") return;
+        var target = d.age_s - (parseFloat(syncMs) / 1000);
+        if (target < 0 || target > audio.duration) return;
+        if (Math.abs(audio.currentTime - target) > 0.5) {
+          audio.currentTime = target;
+          audioDelayS = parseFloat(syncMs) / 1000;
+          updateSyncDisplay();
+          resumeAudio();
+        }
+      } catch (e) {}
+    };
+    sx.send();
+  }
+
+  var videoReconnectTimer = null;
+  function reconnectVideo() {
+    img.src = "/stream" + q + "&_r=" + Date.now();  // cache-bust forces a fresh connection
+    setTimeout(doResync, 1500);                      // let video re-establish, then align audio
+  }
+
   img.addEventListener("error", function () {
     var xhr = new XMLHttpRequest();
     xhr.open("GET", "/stream_status?sid=" + encodeURIComponent(sid), true);
     xhr.onreadystatechange = function () {
       if (xhr.readyState !== 4) return;
       if (xhr.status < 200 || xhr.status >= 300) {
-        showDiag("Video stream failed to load and diagnostics request failed.");
+        // Server unreachable (connection dropped) — retry the video shortly.
+        clearTimeout(videoReconnectTimer);
+        videoReconnectTimer = setTimeout(reconnectVideo, 2000);
         return;
       }
       try {
         var data = JSON.parse(xhr.responseText);
-        var msg = [
-          "Video stream failed to load.",
-          "status: " + (data.status || "unknown"),
-          "error: " + (data.error || "n/a"),
-          "detail: " + (data.error_detail || "n/a")
-        ].join("\\n");
-        showDiag(msg);
+        if (data.status === "streaming" || data.status === "starting") {
+          // Recoverable blip: reconnect the video and realign audio.
+          clearTimeout(videoReconnectTimer);
+          videoReconnectTimer = setTimeout(reconnectVideo, 1000);
+        } else {
+          showDiag([
+            "Video stream failed to load.",
+            "status: " + (data.status || "unknown"),
+            "error: " + (data.error || "n/a"),
+            "detail: " + (data.error_detail || "n/a")
+          ].join("\\n"));
+        }
       } catch (err) {
         showDiag("Video stream failed to load and diagnostics parse failed.");
       }
     };
     xhr.send();
+  });
+
+  // Audio buffered/stalled on a flaky link then resumed behind the video —
+  // realign once it is playing again.
+  var audioWasWaiting = false;
+  audio.addEventListener("waiting", function () { audioWasWaiting = true; });
+  audio.addEventListener("stalled", function () { audioWasWaiting = true; });
+  audio.addEventListener("playing", function () {
+    if (audioWasWaiting) { audioWasWaiting = false; setTimeout(doResync, 300); }
   });
 
   // ── Seek controls ────────────────────────────────────────────────────────
@@ -4036,6 +4433,99 @@ def render_mp4_page(direct_url: str, error_msg: str = "", stream_title: str = ""
             .replace("{{error_msg}}", error_msg))
 
 
+# ── Movie library (poster-grid tab) ─────────────────────────────────────────
+_MOVIE_POSTERS = ("poster.jpg", "poster.png", "folder.jpg", "cover.jpg")
+_MOVIE_EXTRA_DIRS = {"trailers", "featurettes", "behind the scenes", "extras",
+                     "other", "sample", "specials", "deleted scenes", "shorts"}
+_movies_cache: dict = {"ts": 0.0, "data": None}
+_movies_lock = threading.Lock()
+
+
+def _parse_movie_name(folder: str) -> tuple[str, str]:
+    """'Title (2024) {imdb-..} [..]' -> ('Title', '2024')."""
+    m = re.match(r"^(.*?)\s*\((\d{4})\)", folder)
+    if m:
+        return m.group(1).strip(), m.group(2)
+    return folder, ""
+
+
+def _read_nfo_meta(root: str, files: list[str]) -> tuple[str | None, str | None, list[str]]:
+    """(title, year, genres) from a movie .nfo in the folder, if present. Regex, not
+    full XML — these fields are simple and the files vary."""
+    nfo = next((f for f in files if f.lower() == "movie.nfo"), None) \
+        or next((f for f in files if f.lower().endswith(".nfo")), None)
+    if not nfo:
+        return None, None, []
+    try:
+        with open(os.path.join(root, nfo), "r", encoding="utf-8", errors="replace") as fh:
+            text = fh.read(32768)
+    except OSError:
+        return None, None, []
+    tm = re.search(r"<title>([^<]+)</title>", text)
+    ym = re.search(r"<year>(\d{4})</year>", text)
+    genres = []
+    for g in re.findall(r"<genre>([^<]+)</genre>", text):
+        g = g.strip()
+        if g and g not in genres:
+            genres.append(g)
+    return (tm.group(1).strip() if tm else None,
+            ym.group(1) if ym else None,
+            genres)
+
+
+def _scan_movies() -> list[dict]:
+    """Movie folders (a poster image + a top-level video file) under LOCAL_MEDIA_DIR.
+    Reads movie.nfo for clean title + year + genres, and the video mtime for
+    'recently added' sorting."""
+    base = os.path.abspath(LOCAL_MEDIA_DIR)
+    movies = []
+    for root, dirs, files in os.walk(base, followlinks=True):
+        dirs[:] = [d for d in dirs if d.lower() not in _MOVIE_EXTRA_DIRS]
+        lower = {f.lower(): f for f in files}
+        poster = next((lower[p] for p in _MOVIE_POSTERS if p in lower), None)
+        if not poster:
+            continue
+        vids = [f for f in files if os.path.splitext(f)[1].lower() in LOCAL_MEDIA_EXTS]
+        if not vids:
+            continue
+        if len(vids) > 1:
+            try:
+                vids.sort(key=lambda f: os.path.getsize(os.path.join(root, f)), reverse=True)
+            except OSError:
+                pass
+        rel_dir = os.path.relpath(root, base)
+        f_title, f_year = _parse_movie_name(os.path.basename(root))
+        nfo_title, nfo_year, genres = _read_nfo_meta(root, files)
+        video_path = os.path.join(root, vids[0])
+        try:
+            added = int(os.path.getmtime(video_path))
+        except OSError:
+            added = 0
+        movies.append({
+            "title": nfo_title or f_title,
+            "year": nfo_year or f_year,
+            "poster": os.path.join(rel_dir, poster),
+            "file": os.path.join(rel_dir, vids[0]),
+            "genres": genres,
+            "added": added,
+        })
+    movies.sort(key=lambda m: (m["title"].lower(), m["year"]))
+    return movies
+
+
+def _get_movies(force: bool = False) -> list[dict]:
+    """Cached movie list (NFS scan of 100s of folders is slow; refresh forces a rescan)."""
+    with _movies_lock:
+        now = time.time()
+        cached = _movies_cache["data"]
+        if not force and cached is not None and now - _movies_cache["ts"] < 600:
+            return cached
+        data = _scan_movies()
+        _movies_cache["data"] = data
+        _movies_cache["ts"] = now
+        return data
+
+
 # ── HTTP handler ──────────────────────────────────────────────────────────────
 class Handler(BaseHTTPRequestHandler):
     disable_nagle_algorithm = True  # TCP_NODELAY — eliminates inter-frame buffering delay
@@ -4196,6 +4686,22 @@ class Handler(BaseHTTPRequestHandler):
                 self._error(400, err)
                 return
             self._serve_file_bytes(local_file)
+
+        elif path == "/movies":
+            force = qs.get("refresh", ["0"])[0] == "1"
+            self._json({"movies": _get_movies(force=force)})
+
+        elif path == "/poster":
+            rel = unquote(qs.get("path", [None])[0] or "")
+            base = os.path.abspath(LOCAL_MEDIA_DIR)
+            target = os.path.abspath(os.path.normpath(os.path.join(base, rel)))
+            ok = (target == base or target.startswith(base + os.sep)) \
+                and os.path.isfile(target) \
+                and os.path.splitext(target)[1].lower() in (".jpg", ".jpeg", ".png", ".webp")
+            if not ok:
+                self._error(404, "Poster not found")
+                return
+            self._serve_file_bytes(target)
 
         elif path == "/local_media":
             raw_dir = qs.get("dir", [None])[0]
@@ -5023,36 +5529,68 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("X-Stream-Title", self._safe_header_value(stream.title or ""))
         self.end_headers()
 
+        # Disable Nagle: MJPEG writes each frame then waits for the next. With Nagle
+        # + delayed-ACK the per-frame flush stalls ~40-200ms regardless of CPU/bandwidth,
+        # throttling the stream to a few fps and causing the stutter.
+        try:
+            self.connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        except OSError:
+            pass
+
         log.info(f"[{stream.id}] Client connected: {self.client_address[0]}")
         last_frame = None
 
+        def _write(frame):
+            self.wfile.write(
+                b"--frame\r\n"
+                b"Content-Type: image/jpeg\r\n"
+                b"Content-Length: " + str(len(frame)).encode() + b"\r\n\r\n"
+                + frame + b"\r\n"
+            )
+
         try:
-            while True:
-                # Wait for FFmpeg to produce a new frame (wakes all clients immediately).
-                with stream.frame_cond:
-                    stream.frame_cond.wait(timeout=5.0)
-                    if delay_s <= 0:
-                        frame = stream.frame
-                    else:
+            if delay_s > 0:
+                # Jitter buffer. ffmpeg emits frames in GOP bursts (clusters ~1ms
+                # apart, then ~300ms gaps). Forwarding that as-is looks like stutter
+                # even at a correct average fps. Instead, emit at an EVEN cadence from
+                # the delay_s buffer: one frame per 1/fps tick, in order. delay_s of
+                # buffered frames absorbs the bursts, so playback is smooth.
+                interval = 1.0 / max(getattr(stream, "fps", 0) or MJPEG_FPS, 1)
+                last_sent_ts = 0.0
+                next_t = time.time()
+                while True:
+                    next_t += interval
+                    dt = next_t - time.time()
+                    if dt > 0:
+                        time.sleep(dt)
+                    elif dt < -1.0:
+                        next_t = time.time()  # fell far behind, resync clock
+                    with stream.frame_cond:
                         cutoff = time.time() - delay_s
                         frame = None
-                        for ts, candidate in reversed(stream._frame_history):
-                            if ts <= cutoff:
+                        for ts, candidate in stream._frame_history:
+                            if ts > last_sent_ts and ts <= cutoff:
                                 frame = candidate
+                                last_sent_ts = ts
                                 break
-                    status = stream.status
-
-                if frame and frame is not last_frame:
-                    last_frame = frame
-                    boundary = (
-                        b"--frame\r\n"
-                        b"Content-Type: image/jpeg\r\n"
-                        b"Content-Length: " + str(len(frame)).encode() + b"\r\n\r\n"
-                    )
-                    self.wfile.write(boundary + frame + b"\r\n")
-
-                if status in ("error", "done"):
-                    break
+                        status = stream.status
+                    if frame is not None and frame is not last_frame:
+                        last_frame = frame
+                        _write(frame)
+                    elif status in ("error", "done"):
+                        break  # pipeline ended and buffer drained
+            else:
+                # No sync: lowest latency, forward each frame as produced.
+                while True:
+                    with stream.frame_cond:
+                        stream.frame_cond.wait(timeout=5.0)
+                        frame = stream.frame
+                        status = stream.status
+                    if frame and frame is not last_frame:
+                        last_frame = frame
+                        _write(frame)
+                    if status in ("error", "done"):
+                        break
 
         except (BrokenPipeError, ConnectionResetError):
             log.info(f"[{stream.id}] Client disconnected: {self.client_address[0]}")
