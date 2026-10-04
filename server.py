@@ -745,31 +745,59 @@ def _extinf_attr(line: str, attr: str) -> str:
     return m.group(1).strip() if m else ""
 
 
+# Per-stream HTTP headers (Referer/User-Agent) declared in m3u via #EXTVLCOPT /
+# #EXTHTTP, keyed by stream URL. ffmpeg applies them so header-gated channels work.
+_iptv_headers: dict[str, dict] = {}
+
+
+def _blank_pending() -> dict:
+    return {"name": "", "logo": "", "group": "", "referrer": "", "user_agent": ""}
+
+
 def _parse_iptv_m3u(content: str) -> list[dict[str, str]]:
     streams: list[dict[str, str]] = []
-    pending = {"name": "", "logo": "", "group": ""}
+    pending = _blank_pending()
 
     for raw_line in content.splitlines():
         line = raw_line.strip()
         if not line:
             continue
         if line.startswith("#EXTINF"):
-            pending = {
-                "name": _parse_extinf_name(line),
-                "logo": _extinf_attr(line, "tvg-logo"),
-                "group": _extinf_attr(line, "group-title"),
-            }
+            pending = _blank_pending()
+            pending["name"] = _parse_extinf_name(line)
+            pending["logo"] = _extinf_attr(line, "tvg-logo")
+            pending["group"] = _extinf_attr(line, "group-title")
+            continue
+        if line.startswith("#EXTVLCOPT:"):
+            k, _, v = line[len("#EXTVLCOPT:"):].strip().partition("=")
+            k = k.lower().strip()
+            v = v.strip()
+            if k in ("http-referrer", "http-referer"):
+                pending["referrer"] = v
+            elif k == "http-user-agent":
+                pending["user_agent"] = v
+            continue
+        if line.startswith("#EXTHTTP"):
+            try:
+                j = json.loads(line.split(":", 1)[1])
+                pending["referrer"] = pending["referrer"] or j.get("referrer", "") or j.get("Referer", "")
+                pending["user_agent"] = pending["user_agent"] or j.get("user-agent", "") or j.get("User-Agent", "")
+            except Exception:
+                pass
             continue
         if line.startswith("#"):
             continue
 
+        url = line
+        if pending["referrer"] or pending["user_agent"]:
+            _iptv_headers[url] = {"referrer": pending["referrer"], "user_agent": pending["user_agent"]}
         streams.append({
             "name": pending["name"] or f"Stream {len(streams) + 1}",
-            "url": line,
+            "url": url,
             "logo": pending["logo"],
             "group": pending["group"],
         })
-        pending = {"name": "", "logo": "", "group": ""}
+        pending = _blank_pending()
 
     return streams
 
@@ -1125,6 +1153,20 @@ def _direct_input_args(url: str) -> list[str]:
         return ["-timeout", "10000000"]
     if _is_rtp_stream(url):
         return ["-rtbufsize", "100M"]
+    iptv = _iptv_headers.get(url)
+    if iptv:
+        args = ["-user_agent", iptv.get("user_agent") or _BROWSER_UA]
+        hdrs = ""
+        ref = iptv.get("referrer") or ""
+        if ref:
+            hdrs += "Referer: " + ref + "\r\n"
+            p = urlparse(ref)
+            if p.scheme and p.netloc:
+                hdrs += "Origin: " + p.scheme + "://" + p.netloc + "\r\n"
+        if hdrs:
+            args += ["-headers", hdrs]
+        args.append("-re")
+        return args
     parsed = urlparse(url)
     host = parsed.netloc.lower()
     headers = ""
