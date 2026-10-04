@@ -3731,10 +3731,11 @@ STATUS_HTML = """<!DOCTYPE html>
     list.forEach(function (sh) {
       var card = document.createElement("div");
       card.style.cssText = "cursor:pointer;display:flex;flex-direction:column;gap:6px;";
+      var src = sh.art ? sh.art : (sh.poster ? "/poster?path=" + encodeURIComponent(sh.poster) : "");
       var art;
-      if (sh.poster) {
+      if (src) {
         art = document.createElement("img");
-        art.loading = "lazy"; art.src = "/poster?path=" + encodeURIComponent(sh.poster); art.alt = sh.title;
+        art.loading = "lazy"; art.src = src; art.alt = sh.title;
         art.style.cssText = "width:100%;aspect-ratio:2/3;object-fit:cover;border-radius:8px;background:#222;border:1px solid var(--border);";
         art.onerror = function () { var f = showArt(sh); art.replaceWith(f); };
       } else {
@@ -4721,9 +4722,34 @@ def _get_movies(force: bool = False) -> list[dict]:
     return _cached_index(_movies_cache, _movies_lock, "movies_index.json", _scan_movies, force)
 
 
+def _tvmaze_poster(title: str) -> str:
+    """Free TV poster URL from TVmaze (no API key). '' if no match. Tries a few
+    title variants ('Foo - Bar' -> 'Foo Bar', drop '(US)') to improve hits."""
+    variants = [title]
+    if " - " in title:
+        variants.append(title.replace(" - ", " "))
+    stripped = re.sub(r"\s*\(.*?\)", "", title).strip()
+    if stripped and stripped not in variants:
+        variants.append(stripped)
+    for q in variants:
+        try:
+            req = Request("https://api.tvmaze.com/singlesearch/shows?q=" + quote(q),
+                          headers={"User-Agent": "StellaStream/1.0"})
+            with urlopen(req, timeout=8) as r:
+                d = json.loads(r.read().decode("utf-8", "replace"))
+            img = d.get("image") or {}
+            url = img.get("original") or img.get("medium") or ""
+            if url:
+                return url
+        except Exception:
+            pass
+    return ""
+
+
 def _scan_series() -> list[dict]:
     """TV shows under LOCAL_MEDIA_DIR: a folder containing 'Season N'/'Specials'
-    subfolders. Groups show -> seasons -> episodes."""
+    subfolders. Groups show -> seasons -> episodes. Posters that are not on disk
+    are looked up once from TVmaze and cached in the on-disk index."""
     base = os.path.abspath(LOCAL_MEDIA_DIR)
     shows = []
     for root, dirs, files in os.walk(base, followlinks=True):
@@ -4753,9 +4779,14 @@ def _scan_series() -> list[dict]:
             added = int(os.path.getmtime(root))
         except OSError:
             added = 0
+        art = ""
+        if not poster:
+            art = _tvmaze_poster(title)   # free TVmaze lookup; cached in the index
+            time.sleep(0.15)              # be gentle on the TVmaze rate limit
         shows.append({
             "title": title, "year": year,
             "poster": os.path.join(rel_show, poster) if poster else "",
+            "art": art,
             "genres": genres, "added": added, "seasons": seasons,
         })
     shows.sort(key=lambda s: (s["title"].lower(), s["year"]))
