@@ -818,16 +818,22 @@ def _load_iptv_health() -> None:
         _iptv_health = {}
 
 
-def _probe_stream(url: str) -> bool:
-    """Quick liveness probe with the channel's declared headers."""
-    hdr = _iptv_headers.get(url) or {}
-    headers = {"User-Agent": hdr.get("user_agent") or _BROWSER_UA}
-    ref = hdr.get("referrer")
-    if ref:
-        headers["Referer"] = ref
-        p = urlparse(ref)
-        if p.scheme and p.netloc:
-            headers["Origin"] = p.scheme + "://" + p.netloc
+def _probe_stream(url: str, extra_headers: dict | None = None) -> bool:
+    """Quick liveness probe. Uses explicit headers if given, else the channel's
+    declared m3u headers."""
+    headers = {"User-Agent": _BROWSER_UA}
+    if extra_headers:
+        headers.update(extra_headers)
+    else:
+        hdr = _iptv_headers.get(url) or {}
+        if hdr.get("user_agent"):
+            headers["User-Agent"] = hdr["user_agent"]
+        ref = hdr.get("referrer")
+        if ref:
+            headers["Referer"] = ref
+            p = urlparse(ref)
+            if p.scheme and p.netloc:
+                headers["Origin"] = p.scheme + "://" + p.netloc
     try:
         with urlopen(Request(url, headers=headers), timeout=6) as r:
             if getattr(r, "status", 200) >= 400:
@@ -873,6 +879,56 @@ def _iptv_rank(url: str) -> int:
 
 
 _load_iptv_health()
+
+
+# ── Pluto channel health (same idea; keyed by channel id since stitched urls rotate) ──
+_PLUTO_HEALTH_FILE = os.path.join(os.path.dirname(PROGRESS_FILE) or "/config", "pluto_health.json")
+_PLUTO_PROBE_HEADERS = {"Referer": "https://pluto.tv/", "Origin": "https://pluto.tv"}
+_pluto_health: dict = {}
+_pluto_check: dict = {}
+_pluto_health_lock = threading.Lock()
+
+
+def _load_pluto_health() -> None:
+    global _pluto_health
+    try:
+        with open(_PLUTO_HEALTH_FILE, encoding="utf-8") as f:
+            _pluto_health = json.load(f)
+    except Exception:
+        _pluto_health = {}
+
+
+def _run_pluto_check(lang: str, channels: list) -> None:
+    st = _pluto_check.setdefault(lang, {})
+    st.update({"running": True, "done": 0, "total": len(channels)})
+    try:
+        with ThreadPoolExecutor(max_workers=40) as ex:
+            futs = {ex.submit(_probe_stream, c.get("url") or c.get("hls_url", ""), _PLUTO_PROBE_HEADERS): c
+                    for c in channels}
+            for fut in as_completed(futs):
+                try:
+                    ok = fut.result()
+                except Exception:
+                    ok = False
+                with _pluto_health_lock:
+                    _pluto_health[futs[fut].get("id", "")] = ok
+                st["done"] += 1
+    finally:
+        st["running"] = False
+        with _pluto_health_lock:
+            try:
+                with open(_PLUTO_HEALTH_FILE, "w", encoding="utf-8") as f:
+                    json.dump(_pluto_health, f)
+            except Exception:
+                pass
+
+
+def _pluto_rank(cid: str) -> int:
+    v = _pluto_health.get(cid)
+    return 0 if v is True else (2 if v is False else 1)
+
+
+_load_pluto_health()
 
 
 _ace_streams_lock = threading.Lock()
@@ -2150,8 +2206,14 @@ STATUS_HTML = """<!DOCTYPE html>
     </div>
   </div>
   <div class="card">
-    <h2>Channels</h2>
-    <div id="pluto-lang-btns" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px;"></div>
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;">
+      <h2 style="margin:0;">Channels</h2>
+      <button id="pluto-check" title="Test all channels, dead ones go to the bottom"
+              style="background:transparent;color:var(--text);border:1px solid var(--border);border-radius:6px;padding:8px 14px;font-family:'Orbitron',monospace;font-size:.7rem;letter-spacing:.08em;cursor:pointer;">
+        CHECK
+      </button>
+    </div>
+    <div id="pluto-lang-btns" style="display:flex;gap:6px;flex-wrap:wrap;margin:12px 0 14px;"></div>
     <div class="feed-status" id="pluto-status">Open this tab to load channels.</div>
     <div id="pluto-list" style="max-height:520px;overflow-y:auto;border:1px solid var(--border);border-radius:8px;padding:0 10px 10px;"></div>
   </div>
@@ -2748,13 +2810,15 @@ STATUS_HTML = """<!DOCTYPE html>
       var row = document.createElement("div");
       row.className = "stream-row";
       row.style.cursor = "pointer";
+      var pdead = ch.alive === false;
+      if (pdead) row.style.opacity = "0.4";
       var logo = ch.logo
         ? '<img src="' + ch.logo + '" loading="lazy" alt="" style="width:40px;height:40px;object-fit:contain;flex:0 0 40px;background:rgba(255,255,255,.06);border-radius:8px;padding:4px;">'
         : '';
       row.innerHTML =
         '<span style="display:flex;align-items:center;gap:12px;min-width:0;">' + logo +
         '<span style="font-size:.95rem;">' + escHtml(ch.name) + '</span></span>' +
-        '<span style="font-family:monospace;font-size:.75rem;color:var(--muted);flex:0 0 auto;">LIVE →</span>';
+        '<span style="font-family:monospace;font-size:.75rem;color:var(--muted);flex:0 0 auto;">' + (pdead ? 'OFFLINE' : 'LIVE →') + '</span>';
       row.addEventListener("click", function () {
         if (ch.id && plutoActiveLang) {
           var plutoWatchUrl = "/pluto_watch?lang=" + encodeURIComponent(plutoActiveLang) +
@@ -2852,6 +2916,39 @@ STATUS_HTML = """<!DOCTYPE html>
       "color:var(--muted);cursor:pointer;";
     btn.addEventListener("click", function () { switchPlutoLang(lang); });
     plutoLangBtns.appendChild(btn);
+  });
+
+  // Check all channels: probe each, dead ones sink to the bottom
+  var plutoCheckBtn = document.getElementById("pluto-check");
+  var plutoCheckPoll = null;
+  plutoCheckBtn.addEventListener("click", function () {
+    var lang = plutoActiveLang || plutoLangs[0];
+    if (!lang) return;
+    plutoCheckBtn.disabled = true;
+    plutoStatus.textContent = "Checking channels…";
+    var start = new XMLHttpRequest();
+    start.open("GET", "/pluto_check?lang=" + encodeURIComponent(lang), true);
+    start.onreadystatechange = function () {
+      if (start.readyState !== 4) return;
+      clearInterval(plutoCheckPoll);
+      plutoCheckPoll = setInterval(function () {
+        var st = new XMLHttpRequest();
+        st.open("GET", "/pluto_check_status?lang=" + encodeURIComponent(lang), true);
+        st.onreadystatechange = function () {
+          if (st.readyState !== 4) return;
+          var d; try { d = JSON.parse(st.responseText); } catch (e) { return; }
+          plutoStatus.textContent = "Checking channels… " + (d.done || 0) + "/" + (d.total || 0);
+          if (!d.running) {
+            clearInterval(plutoCheckPoll);
+            plutoCheckBtn.disabled = false;
+            delete plutoByLang[lang];   // force re-fetch, now sorted (dead at bottom)
+            switchPlutoLang(lang);
+          }
+        };
+        st.send();
+      }, 2000);
+    };
+    start.send();
   });
 
   // Load first language when Pluto tab is first opened
@@ -5297,6 +5394,22 @@ class Handler(BaseHTTPRequestHandler):
             raw_list = qs.get("list", [None])[0]
             self._json(_iptv_check.get(raw_list, {"running": False, "done": 0, "total": 0}))
 
+        elif path == "/pluto_check":
+            lang = qs.get("lang", [None])[0] or (PLUTO_LANGS[0] if PLUTO_LANGS else "en")
+            channels, _perr = pluto_cache.get(lang)
+            if not channels:
+                self._error(503, "Pluto channels not loaded yet")
+                return
+            if _pluto_check.get(lang, {}).get("running"):
+                self._json(_pluto_check[lang])
+                return
+            threading.Thread(target=_run_pluto_check, args=(lang, list(channels)), daemon=True).start()
+            self._json({"running": True, "done": 0, "total": len(channels)})
+
+        elif path == "/pluto_check_status":
+            lang = qs.get("lang", [None])[0] or (PLUTO_LANGS[0] if PLUTO_LANGS else "en")
+            self._json(_pluto_check.get(lang, {"running": False, "done": 0, "total": 0}))
+
         elif path == "/poster":
             rel = unquote(qs.get("path", [None])[0] or "")
             base = os.path.abspath(LOCAL_MEDIA_DIR)
@@ -5955,13 +6068,16 @@ class Handler(BaseHTTPRequestHandler):
                 self._error(503, "Pluto TV channel list not loaded yet, try again shortly")
             return
         meta = pluto_cache.get_meta(lang)
+        chans = sorted(channels, key=lambda c: _pluto_rank(c.get("id", "")))
+        for c in chans:
+            c["alive"] = _pluto_health.get(c.get("id", ""))
         self._json({
             "lang": lang,
             "country": meta.get("country", ""),
             "region": meta.get("region", ""),
             "xff": meta.get("xff", ""),
             "refresh_at": meta.get("refresh_at", 0),
-            "channels": channels,
+            "channels": chans,
         })
 
     # ── Feed ──────────────────────────────────────────────────────────────────
