@@ -2114,8 +2114,8 @@ STATUS_HTML = """<!DOCTYPE html>
     <svg viewBox="0 0 24 24" style="width:26px;height:26px;fill:currentColor;stroke:none;" aria-label="spark"><path d="M12 2.5l1.9 6L20 10l-6.1 1.5L12 17.5l-1.9-6L4 10l6.1-1.5z"/></svg>
   </div>
   <div style="font-size:1rem;color:var(--text);font-weight:600;letter-spacing:.02em;">Made by the best intelligences.</div>
-  <div style="font-size:.88rem;color:var(--muted);margin-top:5px;">Soon we leave this planet — when is up to mankind and Elon Musk.</div>
-  <div style="font-size:.8rem;color:var(--muted);margin-top:7px;font-style:italic;opacity:.8;">The world is changing. Few have noticed — yet.</div>
+  <div style="font-size:.92rem;color:var(--muted);margin:9px auto 0;max-width:520px;font-style:italic;line-height:1.5;">&ldquo;Failure is an option here. If things are not failing, you are not innovating enough.&rdquo;</div>
+  <div style="font-size:.8rem;color:var(--red);margin-top:6px;letter-spacing:.06em;">— Elon Musk</div>
 </footer>
 <p id="weather-text" style="margin-top:10px;color:var(--muted);font-size:.85rem;text-align:center;"></p>
 
