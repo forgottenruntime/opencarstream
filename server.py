@@ -1737,11 +1737,11 @@ STATUS_HTML = """<!DOCTYPE html>
   /* shared input style for start-stream row */
   #yt-id{flex:1;min-width:300px;background:var(--input-bg);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:12px 16px;font-family:monospace;font-size:1rem;}
   select{background:var(--input-bg);color:var(--text);border:1px solid var(--border);border-radius:8px;padding:12px 16px;font-family:monospace;font-size:1rem;}
-  footer{margin-top:30px;color:var(--muted);font-size:.82rem;letter-spacing:.04em;text-align:center;max-width:1600px;line-height:1.6;}
+  footer{margin-top:14px;color:var(--muted);font-size:.82rem;letter-spacing:.04em;text-align:center;max-width:1600px;line-height:1.5;}
 
   /* ── Stella Stream · Tesla-OS shell ── */
   @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
-  body{font-family:'Inter',system-ui,-apple-system,sans-serif;font-size:17px;padding:72px 24px 128px;}
+  body{font-family:'Inter',system-ui,-apple-system,sans-serif;font-size:17px;padding:60px 20px 104px;}
   .statusbar{position:fixed;top:0;left:0;right:0;z-index:50;display:flex;align-items:center;justify-content:space-between;
     padding:13px 26px;background:color-mix(in srgb,var(--dark) 82%,transparent);backdrop-filter:blur(16px);
     border-bottom:1px solid var(--border);}
@@ -1754,15 +1754,15 @@ STATUS_HTML = """<!DOCTYPE html>
   .statusline .net{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:.84rem;}
   .statusline .dot{width:9px;height:9px;border-radius:50%;background:#30d158;box-shadow:0 0 9px rgba(48,209,88,.7);}
   /* home launcher */
-  #tab-home h2.home-h{font-weight:600;font-size:1.5rem;color:var(--text);margin:4px 2px 20px;letter-spacing:-.01em;}
-  .app-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(188px,1fr));gap:18px;}
-  .app-tile{display:flex;flex-direction:column;gap:14px;min-height:148px;padding:22px;border-radius:24px;cursor:pointer;
+  #tab-home h2.home-h{font-weight:600;font-size:1.2rem;color:var(--text);margin:2px 2px 12px;letter-spacing:-.01em;}
+  .app-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:12px;}
+  .app-tile{display:flex;flex-direction:column;gap:7px;min-height:102px;padding:15px 16px;border-radius:18px;cursor:pointer;
     background:var(--panel);border:1px solid var(--border);transition:transform .14s ease,border-color .14s ease,background .14s ease;}
   .app-tile:hover,.app-tile:focus-visible{transform:translateY(-3px);border-color:var(--red);background:var(--thumb-bg);outline:none;}
   .app-tile .ico{color:var(--text);}
-  .app-tile .ico svg{width:38px;height:38px;}
-  .app-tile .t-label{font-size:1.16rem;font-weight:600;color:var(--text);margin-top:auto;}
-  .app-tile .t-desc{font-size:.84rem;color:var(--muted);}
+  .app-tile .ico svg{width:29px;height:29px;}
+  .app-tile .t-label{font-size:1.02rem;font-weight:600;color:var(--text);margin-top:auto;}
+  .app-tile .t-desc{font-size:.8rem;color:var(--muted);}
   /* dock */
   .dock{position:fixed;left:50%;transform:translateX(-50%);bottom:16px;z-index:60;display:flex;gap:3px;padding:8px;
     border-radius:24px;background:color-mix(in srgb,var(--panel) 92%,transparent);backdrop-filter:blur(18px);
@@ -2108,18 +2108,13 @@ STATUS_HTML = """<!DOCTYPE html>
 <nav class="dock" id="dock"></nav>
 
 <footer>
-  <div style="display:flex;justify-content:center;gap:18px;margin-bottom:13px;color:var(--red);filter:drop-shadow(0 0 7px rgba(227,25,55,.45));">
-    <svg viewBox="0 0 24 24" style="width:26px;height:26px;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round;" aria-label="rocket"><path d="M12 2c3 2.4 4.6 6 4.6 9.5L14 14h-4l-2.6-2.5C7.4 8 9 4.4 12 2z"/><circle cx="12" cy="9" r="1.5"/><path d="M8 15l-2.5 2.5M8 15c-2 .7-3 2.5-3 5 2.5 0 4.3-1 5-3M16 15l2.5 2.5M16 15c2 .7 3 2.5 3 5-2.5 0-4.3-1-5-3"/></svg>
-    <svg viewBox="0 0 24 24" style="width:26px;height:26px;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round;" aria-label="world"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3 3 15 0 18M12 3c-3 3-3 15 0 18"/></svg>
-    <svg viewBox="0 0 24 24" style="width:26px;height:26px;fill:currentColor;stroke:none;" aria-label="spark"><path d="M12 2.5l1.9 6L20 10l-6.1 1.5L12 17.5l-1.9-6L4 10l6.1-1.5z"/></svg>
+  <div style="display:flex;justify-content:center;gap:14px;margin-bottom:7px;color:var(--red);filter:drop-shadow(0 0 6px rgba(227,25,55,.45));">
+    <svg viewBox="0 0 24 24" style="width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round;" aria-label="rocket"><path d="M12 2c3 2.4 4.6 6 4.6 9.5L14 14h-4l-2.6-2.5C7.4 8 9 4.4 12 2z"/><circle cx="12" cy="9" r="1.5"/><path d="M8 15l-2.5 2.5M8 15c-2 .7-3 2.5-3 5 2.5 0 4.3-1 5-3M16 15l2.5 2.5M16 15c2 .7 3 2.5 3 5-2.5 0-4.3-1-5-3"/></svg>
+    <svg viewBox="0 0 24 24" style="width:20px;height:20px;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round;" aria-label="world"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3 3 15 0 18M12 3c-3 3-3 15 0 18"/></svg>
+    <svg viewBox="0 0 24 24" style="width:20px;height:20px;fill:currentColor;stroke:none;" aria-label="spark"><path d="M12 2.5l1.9 6L20 10l-6.1 1.5L12 17.5l-1.9-6L4 10l6.1-1.5z"/></svg>
   </div>
-  <div style="font-size:1rem;color:var(--text);font-weight:600;letter-spacing:.02em;">Made by the best intelligences.</div>
-  <div style="display:flex;align-items:center;justify-content:center;gap:9px;margin-top:8px;color:var(--text);font-size:.92rem;">
-    <svg viewBox="0 0 24 24" style="width:18px;height:18px;fill:none;stroke:var(--red);stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round;"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3 3 15 0 18M12 3c-3 3-3 15 0 18"/></svg>
-    <span>Soon we leave this planet</span>
-  </div>
-  <div style="font-size:.92rem;color:var(--muted);margin:12px auto 0;max-width:520px;font-style:italic;line-height:1.5;">&ldquo;Failure is an option here. If things are not failing, you are not innovating enough.&rdquo;</div>
-  <div style="font-size:.8rem;color:var(--red);margin-top:6px;letter-spacing:.06em;">— Elon Musk</div>
+  <div style="font-size:.92rem;color:var(--text);font-weight:600;letter-spacing:.02em;display:flex;align-items:center;justify-content:center;gap:7px;flex-wrap:wrap;">Made by the best intelligences.<svg viewBox="0 0 24 24" style="width:15px;height:15px;fill:none;stroke:var(--red);stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3 3 15 0 18M12 3c-3 3-3 15 0 18"/></svg><span style="color:var(--muted);font-weight:400;">Soon we leave this planet.</span></div>
+  <div style="font-size:.85rem;color:var(--muted);margin:5px auto 0;max-width:620px;font-style:italic;line-height:1.45;">&ldquo;Failure is an option here. If things are not failing, you are not innovating enough.&rdquo; <span style="color:var(--red);font-style:normal;">— Elon Musk</span></div>
 </footer>
 <p id="weather-text" style="margin-top:10px;color:var(--muted);font-size:.85rem;text-align:center;"></p>
 
