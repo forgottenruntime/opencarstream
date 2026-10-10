@@ -62,6 +62,10 @@ MAX_STREAMS   = int(os.environ.get("MAX_STREAMS", "3"))       # concurrent strea
 # Decode is the heavy part for 1080p HEVC/H264; offloading it to the iGPU frees CPU.
 HW_DECODE       = os.environ.get("HW_DECODE", "off").lower()
 HWACCEL_DEVICE  = os.environ.get("HWACCEL_DEVICE", "/dev/dri/renderD128")
+# Plex (optional): authoritative "recently added" + the Recently Added row.
+PLEX_URL            = os.environ.get("PLEX_URL", "").rstrip("/")
+PLEX_TOKEN          = os.environ.get("PLEX_TOKEN", "")
+PLEX_MOVIE_SECTION  = os.environ.get("PLEX_MOVIE_SECTION", "1")
 AUDIO_DELAY_MS= int(os.environ.get("AUDIO_DELAY_MS", "0"))   # ms to delay video start after audio, to keep streams in sync
 LOCAL_MEDIA_VIDEO_DELAY_MS = int(
     os.environ.get("LOCAL_MEDIA_VIDEO_DELAY_MS", "1500")
@@ -2381,6 +2385,10 @@ STATUS_HTML = """<!DOCTYPE html>
     </div>
     <div class="feed-status" id="movies-status" style="margin-top:10px;">Open this tab to load your library.</div>
   </div>
+  <div class="card" id="movies-recent-card" style="display:none;">
+    <h2 style="margin-bottom:12px;">Recently added</h2>
+    <div id="movies-recent" style="display:flex;gap:14px;overflow-x:auto;padding-bottom:8px;"></div>
+  </div>
   <div class="card">
     <div id="movies-grid" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:14px;"></div>
   </div>
@@ -2725,7 +2733,8 @@ STATUS_HTML = """<!DOCTYPE html>
   }
   twitchTopRefresh.addEventListener("click", loadTwitchTop);
   var twitchTopOpened = false;
-  document.querySelector('[data-tab="twitch"]').addEventListener("click", function () {
+  var _twTabBtn = document.querySelector('[data-tab="twitch"]');
+  if (_twTabBtn) _twTabBtn.addEventListener("click", function () {
     if (twitchTopOpened) return;
     twitchTopOpened = true;
     loadTwitchTop();
@@ -4125,11 +4134,47 @@ STATUS_HTML = """<!DOCTYPE html>
     xhr.send();
   }
   moviesRefresh.addEventListener("click", function () { loadMovies(true); });
+
+  // Recently added (from Plex, authoritative order)
+  function loadMoviesRecent() {
+    var xhr = new XMLHttpRequest();
+    xhr.open("GET", "/plex_recent", true); xhr.timeout = 12000;
+    xhr.onreadystatechange = function () {
+      if (xhr.readyState !== 4) return;
+      var data; try { data = JSON.parse(xhr.responseText); } catch (e) { return; }
+      var list = data.movies || [];
+      if (!list.length) return;
+      var card = document.getElementById("movies-recent-card");
+      var row = document.getElementById("movies-recent");
+      row.innerHTML = "";
+      list.forEach(function (m) {
+        var c = document.createElement("div");
+        c.style.cssText = "cursor:pointer;flex:0 0 120px;display:flex;flex-direction:column;gap:6px;";
+        var img = document.createElement("img");
+        img.loading = "lazy"; img.src = "/poster?path=" + encodeURIComponent(m.poster); img.alt = m.title;
+        img.style.cssText = "width:120px;aspect-ratio:2/3;object-fit:cover;border-radius:8px;background:#222;border:1px solid var(--border);";
+        img.onerror = function () { img.style.visibility = "hidden"; };
+        var t = document.createElement("div");
+        t.textContent = m.title + (m.year ? " (" + m.year + ")" : "");
+        t.style.cssText = "font-size:.76rem;color:var(--text);line-height:1.2;width:120px;";
+        c.appendChild(img); c.appendChild(t);
+        c.addEventListener("click", function () {
+          window.location.href = "/local_watch?file=" + encodeURIComponent(m.file) +
+            "&sync=" + encodeURIComponent(moviesSync.value);
+        });
+        row.appendChild(c);
+      });
+      card.style.display = "block";
+    };
+    xhr.send();
+  }
+
   var moviesOpened = false;
   document.querySelector('[data-tab="movies"]').addEventListener("click", function () {
     if (moviesOpened) return;
     moviesOpened = true;
     loadMovies(false);
+    loadMoviesRecent();
   });
 
   // ── TV Series tab (shows -> seasons -> episodes) ──
@@ -5262,6 +5307,51 @@ def _get_series(force: bool = False) -> list[dict]:
     return _cached_index(_series_cache, _series_lock, "series_index.json", _scan_series, force)
 
 
+_plex_recent_cache: dict = {"ts": 0.0, "data": None}
+
+
+def _plex_recent(limit: int = 18) -> list[dict]:
+    """Recently-added movies from Plex (authoritative addedAt). Maps Plex's
+    /data/... file path to our plex/... path and reuses the local poster. []
+    when Plex isn't configured."""
+    if not (PLEX_URL and PLEX_TOKEN):
+        return []
+    now = time.time()
+    if _plex_recent_cache["data"] is not None and now - _plex_recent_cache["ts"] < 300:
+        return _plex_recent_cache["data"]
+    import html as _html
+    url = (f"{PLEX_URL}/library/sections/{PLEX_MOVIE_SECTION}/all"
+           f"?sort=addedAt:desc&X-Plex-Container-Start=0&X-Plex-Container-Size={int(limit)}"
+           f"&X-Plex-Token={PLEX_TOKEN}")
+    try:
+        with urlopen(Request(url, headers={"Accept": "application/xml"}), timeout=10) as r:
+            xml = r.read().decode("utf-8", "replace")
+    except Exception:
+        return _plex_recent_cache["data"] or []
+    out = []
+    for block in xml.split("<Video")[1:]:
+        def attr(a, b=block):
+            m = re.search(a + r'="([^"]*)"', b)
+            return m.group(1) if m else ""
+        pm = re.search(r'<Part[^>]*file="(/data/[^"]+)"', block)
+        if not pm:
+            continue
+        plexfile = _html.unescape(pm.group(1))
+        rel = "plex" + plexfile[len("/data"):]          # /data/X -> plex/X
+        folder = rel.rsplit("/", 1)[0]
+        added = attr("addedAt")
+        out.append({
+            "title": _html.unescape(attr("title")),
+            "year": attr("year"),
+            "added": int(added) if added.isdigit() else 0,
+            "file": rel,
+            "poster": folder + "/poster.jpg",
+        })
+    _plex_recent_cache["data"] = out
+    _plex_recent_cache["ts"] = now
+    return out
+
+
 # ── HTTP handler ──────────────────────────────────────────────────────────────
 class Handler(BaseHTTPRequestHandler):
     disable_nagle_algorithm = True  # TCP_NODELAY — eliminates inter-frame buffering delay
@@ -5426,6 +5516,9 @@ class Handler(BaseHTTPRequestHandler):
         elif path == "/movies":
             force = qs.get("refresh", ["0"])[0] == "1"
             self._json({"movies": _get_movies(force=force)})
+
+        elif path == "/plex_recent":
+            self._json({"movies": _plex_recent()})
 
         elif path == "/series":
             force = qs.get("refresh", ["0"])[0] == "1"
