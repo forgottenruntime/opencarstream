@@ -116,6 +116,8 @@ class Stream:
         self.error_detail = ""
         self.created_at = time.time()
         self.last_used  = time.time()
+        self.clients    = 0            # connected /stream + /audio clients
+        self.last_client_at = time.time()
         self._yt_proc   = None
         self._ff_proc   = None
         self._audio_proc: object | None = None   # separate audio ffmpeg for direct streams
@@ -226,6 +228,35 @@ class Registry:
                 self._streams[sid].stop()
                 del self._streams[sid]
                 log.info(f"Cleaned up stream {sid}")
+
+    def cleanup_idle(self, grace_s: float = 20.0):
+        """Stop streams no client is watching (back/closed tab) after a short grace,
+        so ffmpeg does not keep running for nobody. Grace absorbs reconnects."""
+        now = time.time()
+        with self._lock:
+            idle = [sid for sid, s in self._streams.items()
+                    if s.status in ("starting", "streaming")
+                    and s.clients <= 0
+                    and now - s.last_client_at > grace_s]
+            for sid in idle:
+                log.info(f"Stopping idle stream {sid} (no clients)")
+                self._streams[sid].stop()
+                self._streams[sid].status = "done"
+                del self._streams[sid]
+
+    def client_connected(self, sid: str):
+        with self._lock:
+            s = self._streams.get(sid)
+            if s:
+                s.clients += 1
+                s.last_client_at = time.time()
+
+    def client_disconnected(self, sid: str):
+        with self._lock:
+            s = self._streams.get(sid)
+            if s:
+                s.clients = max(0, s.clients - 1)
+                s.last_client_at = time.time()
 
     def cleanup_old(self):
         """Stop and remove streams that have been active longer than MAX_STREAM_AGE_S."""
@@ -2444,7 +2475,6 @@ STATUS_HTML = """<!DOCTYPE html>
     {k:"feed",   label:"YouTube",     desc:"Search & channels"},
     {k:"stream", label:"Stream",      desc:"Paste any link"},
     {k:"pluto",  label:"Pluto TV",    desc:"Free live TV"},
-    {k:"twitch", label:"Twitch",      desc:"Live & VODs"},
     {k:"iptv",   label:"IPTV",        desc:"Your playlists"},
     {k:"local",  label:"Local Media", desc:"Browse files"},
     {k:"info",   label:"Info",        desc:"API & status"}
@@ -2457,6 +2487,7 @@ STATUS_HTML = """<!DOCTYPE html>
     Array.prototype.forEach.call(document.querySelectorAll(".dock-btn"), function (b) {
       b.classList.toggle("active", b.getAttribute("data-tab") === k);
     });
+    try { sessionStorage.setItem("ocs_section", k); } catch (e) {}
     window.scrollTo(0, 0);
   }
   var appGrid = document.getElementById("app-grid");
@@ -2495,6 +2526,7 @@ STATUS_HTML = """<!DOCTYPE html>
   var _themeDockBtn = makeDockBtn("", "Theme", ICONS.theme);
   _themeDockBtn.id = "theme-toggle";
   dock.appendChild(_themeDockBtn);
+  try { window._ocsRestore = { sec: sessionStorage.getItem("ocs_section"), q: sessionStorage.getItem("ocs_yt_q") }; } catch (e) {}
   showSection("home");
   (function clock() {
     var el = document.getElementById("clock");
@@ -3558,6 +3590,7 @@ STATUS_HTML = """<!DOCTYPE html>
     if (!q) { ytSearchInput.focus(); return; }
     if (!append) {
       saveYtSearch(q);
+      try { sessionStorage.setItem("ocs_yt_q", q); } catch (e) {}
       ytSearchLimit = 12;
       ytSearchGrid.innerHTML = "";
       ytSearchMoreWrap.style.display = "none";
@@ -4230,6 +4263,22 @@ STATUS_HTML = """<!DOCTYPE html>
     loadSeries(false);
   });
   } catch(e) { /* init error — non-fatal */ }
+
+  // Restore the view you were on (Back from the player returns here, not Home).
+  setTimeout(function () {
+    try {
+      var _r = window._ocsRestore || {};
+      if (!_r.sec || _r.sec === "home") return;
+      var _b = document.querySelector('.dock-btn[data-tab="' + _r.sec + '"]');
+      if (!_b) return;
+      _b.click();
+      if (_r.sec === "feed" && _r.q) {
+        var _yi = document.getElementById("yt-search-input");
+        var _go = document.getElementById("yt-search-go");
+        if (_yi && _go) { _yi.value = _r.q; _go.click(); }
+      }
+    } catch (e) {}
+  }, 400);
 })();
 </script>
 </body></html>"""
@@ -4251,9 +4300,9 @@ WATCH_HTML = """<!DOCTYPE html>
   .back{color:var(--red);text-decoration:none;font-family:monospace;}
   .wrap{width:100%;max-width:1280px;background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:10px;}
   img{width:100%;height:auto;display:block;background:black;border-radius:8px;}
-  audio{width:100%;margin-top:10px;}
+  audio{width:100%;margin-top:10px;height:34px;color-scheme:dark;accent-color:var(--red);border-radius:8px;}
   .diag{margin-top:10px;padding:10px 12px;border:1px solid var(--border);border-radius:8px;font-family:monospace;font-size:.85rem;line-height:1.4;white-space:pre-wrap;color:#f0b5bf;background:#160d11;display:none;}
-  .seek-bar{display:flex;align-items:center;gap:10px;margin-top:10px;flex-wrap:wrap;}
+  .seek-bar{display:flex;align-items:center;gap:10px;margin-top:28px;padding-top:14px;border-top:1px solid var(--border);flex-wrap:wrap;}
   .seek-btn{background:var(--panel);border:1px solid var(--border);color:var(--text);font-family:'Rajdhani',sans-serif;font-size:1rem;font-weight:500;padding:6px 14px;border-radius:6px;cursor:pointer;transition:border-color .15s,color .15s;}
   .seek-btn:hover{border-color:var(--red);color:var(--red);}
   .seek-btn.active{border-color:var(--red);color:var(--red);}
@@ -4319,6 +4368,18 @@ WATCH_HTML = """<!DOCTYPE html>
     return;
   }
   var q = "?sid=" + encodeURIComponent(sid) + "&sync=" + encodeURIComponent(syncMs);
+
+  // Kill the stream when leaving (Back / close) so ffmpeg doesn't run for nobody.
+  function stopThisStream() {
+    try {
+      if (navigator.sendBeacon) navigator.sendBeacon("/stop_stream?sid=" + encodeURIComponent(sid));
+      else fetch("/stop_stream?sid=" + encodeURIComponent(sid), { keepalive: true });
+    } catch (e) {}
+  }
+  window.addEventListener("pagehide", stopThisStream);
+  var _backLink = document.querySelector("a.back");
+  if (_backLink) _backLink.addEventListener("click", stopThisStream);
+
   var img = document.getElementById("mjpeg");
   var audio = document.getElementById("audio");
   var diag = document.getElementById("diag");
@@ -5103,7 +5164,8 @@ def _scan_movies() -> list[dict]:
         nfo_title, nfo_year, genres = _read_nfo_meta(root, files)
         video_path = os.path.join(root, vids[0])
         try:
-            added = int(os.path.getmtime(video_path))
+            stv = os.stat(video_path)
+            added = int(max(stv.st_mtime, stv.st_ctime))  # ctime ~ when it landed on disk
         except OSError:
             added = 0
         movies.append({
@@ -6263,6 +6325,7 @@ class Handler(BaseHTTPRequestHandler):
             pass
 
         log.info(f"[{stream.id}] Client connected: {self.client_address[0]}")
+        registry.client_connected(stream.id)
         last_frame = None
 
         def _write(frame):
@@ -6319,6 +6382,8 @@ class Handler(BaseHTTPRequestHandler):
 
         except (BrokenPipeError, ConnectionResetError):
             log.info(f"[{stream.id}] Client disconnected: {self.client_address[0]}")
+        finally:
+            registry.client_disconnected(stream.id)
 
     @staticmethod
     def _launch_audio_pipeline(url: str, seek_s: float):
@@ -6534,6 +6599,28 @@ def main():
     threading.Thread(target=_home_feed_refresher, daemon=True).start()
 
     server = ThreadedHTTPServer((HOST, PORT), Handler)
+
+    def _janitor():
+        while True:
+            time.sleep(10)
+            try:
+                registry.cleanup_idle()   # kill streams nobody is watching
+                registry.cleanup_done()
+                registry.cleanup_old()
+            except Exception:
+                pass
+
+    def _library_refresher():
+        while True:
+            time.sleep(1800)              # 30 min: pick up newly downloaded titles
+            try:
+                _get_movies(force=True)
+                _get_series(force=True)
+            except Exception:
+                pass
+
+    threading.Thread(target=_janitor, daemon=True).start()
+    threading.Thread(target=_library_refresher, daemon=True).start()
 
     def _stop(sig, frame):
         log.info("Shutting down…")
