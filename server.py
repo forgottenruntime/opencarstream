@@ -2819,7 +2819,7 @@ STATUS_HTML = """<!DOCTYPE html>
     { value: "3000", label: "3s" },
     { value: "3500", label: "3.5s" },
     { value: "4000", label: "4s" }
-  ], "{{audio_delay_ms}}");
+  ], "1500");  // live HLS through the jitter buffer = smoother
 
   var plutoByLang   = {};   // { lang: [channels] }
   var plutoMetaByLang = {}; // { lang: { country: "...", refresh_at: n } }
@@ -3023,7 +3023,7 @@ STATUS_HTML = """<!DOCTYPE html>
     { value: "3000", label: "3s" },
     { value: "3500", label: "3.5s" },
     { value: "4000", label: "4s" }
-  ], "{{audio_delay_ms}}");
+  ], "1500");  // live HLS through the jitter buffer = smoother
 
   var iptvLists = [];
   var iptvStreams = [];
@@ -4319,6 +4319,8 @@ WATCH_HTML = """<!DOCTYPE html>
   .sync-btn{background:var(--panel);border:1px solid var(--border);color:var(--text);font-family:'Rajdhani',sans-serif;font-size:1rem;font-weight:500;padding:6px 14px;border-radius:6px;cursor:pointer;}
   .sync-btn:hover{border-color:var(--red);color:var(--red);}
   .sync-val{font-family:monospace;font-size:.95rem;color:var(--red);min-width:60px;text-align:center;}
+  .sync-hint{font-size:.8rem;color:var(--muted);padding:2px 4px 0;}
+  .sync-hint b{color:var(--red);}
 </style>
 </head>
 <body>
@@ -4338,6 +4340,7 @@ WATCH_HTML = """<!DOCTYPE html>
       <button class="sync-btn" data-delta="0.1">+0.1s</button>
       <button class="sync-btn" data-delta="0.5">+0.5s</button>
     </div>
+    <div class="sync-hint">Sound comes too early? press <b>+</b>&nbsp;&nbsp;·&nbsp;&nbsp;Sound lags the picture? press <b>−</b></div>
     <div class="seek-bar">
       <span class="sync-label" style="margin-right:4px;">Video</span>
       <button class="seek-btn" data-mins="-10">-10 min</button>
